@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.3 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.4 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -39,11 +39,12 @@ def main():
            'LINGTAI_SIMPLE_KEYCHAIN_SERVICE': KC_SERVICE}
     proc = subprocess.Popen([sys.executable, 'server.py'], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    created_refs = []
     try:
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.3', health
+        assert health['version']=='v0.4', health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
         assert len(catalog['providers'])>=6 and catalog['max_agents']==5
@@ -96,14 +97,25 @@ def main():
         demo=req('/api/demo/load', {}); assert demo['ok'] and demo['result']['agents'] >= 1
         sg=req('/api/shougong', {}); assert pathlib.Path(sg['result']['path']).exists()
 
+        # ---- Time Machine / rollback：真实创建 git snapshot，request 进入确认队列；不在原仓库执行 reset ----
+        snap=req('/api/rollback/snapshot', {'label':'selfcheck-safe-point'})
+        assert snap['ok'] and snap['result']['ref'].startswith('refs/lingtai-simple/snapshots/'), snap
+        created_refs.append(snap['result']['ref'])
+        prev=req('/api/rollback/preview')
+        assert prev['git_available'] is True and any(x['id']==snap['result']['id'] for x in prev['snapshots']), prev
+        rb=req('/api/rollback/request', {'snapshot_id':snap['result']['id']})
+        assert rb['ok'] and rb['result']['action']=='rollback_apply' and rb['result'].get('rollback_ref'), rb
+
         # 再次确认：任何写盘后 state.json 仍无假 key
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.3 self-check passed')
+        print('OK LingTai Simple v0.4 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
         except subprocess.TimeoutExpired: proc.kill()
         if state.exists(): state.unlink()
+        for ref in created_refs:
+            subprocess.run(['git','update-ref','-d',ref], cwd=ROOT, capture_output=True)
         # 清理可能残留的 Keychain 假 key（隔离 service）
         if have_security:
             subprocess.run(['security','delete-generic-password','-a','openai','-s',KC_SERVICE],

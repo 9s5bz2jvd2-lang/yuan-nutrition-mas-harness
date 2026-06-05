@@ -330,7 +330,7 @@ function openModelsModal() {
     </div>
 
     <hr class="soft" />
-    <div class="preview">💸 <b>真实模型调用</b>：下面这一步会通过你保存的 key 向供应商发起 <b>真实网络请求，可能产生费用</b>。其余高危动作（外发 / commit / PR / merge / rollback）本里程碑仍为预览，需下一阶段接入并二次确认。</div>
+    <div class="preview">💸 <b>真实模型调用</b>：下面这一步会通过你保存的 key 向供应商发起 <b>真实网络请求，可能产生费用</b>。其余高危动作中，rollback 已接入本仓库 git Time Machine（确认后真实 reset）；外发 / commit / PR / merge 仍为预览，需下一阶段接入。</div>
     <label>测试提示词（可选）</label>
     <input id="pv-prompt" placeholder="例如：用一句话确认你能正常回复" />
     <label class="checkrow"><input type="checkbox" id="pv-confirm-cost" /> 我已知道这是真实调用、可能产生费用</label>
@@ -467,23 +467,34 @@ function copyShougong(btn) {
 async function openRollbackModal() {
   const res = await fetch("/api/rollback/preview");
   const data = await res.json();
-  const snaps = data.snapshots.map(s => `
+  const snaps = (data.snapshots || []).map(s => `
     <div class="row">
-      <div class="row-top"><span class="row-title">${esc(s.label)}</span><span class="tag idle">${esc(s.id)}</span></div>
-      <div class="row-sub">创建：${esc((s.created_at || "").slice(0, 19).replace("T", " "))}</div>
-      <div class="preview">${esc(s.diff_preview)}</div>
+      <div class="row-top"><span class="row-title">${esc(s.label)}</span><span class="tag ${s.kind === 'safety' ? 'warn' : 'idle'}">${esc(s.kind || 'snapshot')} · ${esc(s.id)}</span></div>
+      <div class="row-sub">创建：${esc((s.created_at || "").slice(0, 19).replace("T", " "))} · commit ${esc(s.short_commit || '')}</div>
+      <div class="preview">${esc(s.diff_preview || '')}</div>
       <div class="row-actions">
-        <button class="btn small danger" onclick="requestRollback('${s.id}')">回退（进确认队列预览）</button>
+        <button class="btn small danger" onclick="requestRollback('${esc(s.id)}')">回退到这里（先进入确认队列）</button>
       </div>
-    </div>`).join("");
-  openModal("⏪ 时间机器 / Rollback（mock）", `
+    </div>`).join("") || `<div class="empty">还没有快照。先点“创建当前安全快照”。</div>`;
+  openModal("⏪ 时间机器 / Rollback（真实）", `
     <div class="preview">${esc(data.note)}</div>
+    <div class="preview">当前 HEAD：${esc(data.current_head || 'unknown')}；工作区：${data.dirty ? '有未提交改动' : '干净'}<br><pre>${esc(data.status_short || '')}</pre></div>
+    <div class="row-actions">
+      <input id="snapshotLabel" placeholder="快照名称，例如：改 UI 前安全点" value="手动安全快照" />
+      <button class="btn" onclick="createSnapshot()">创建当前安全快照（真实 git ref）</button>
+    </div>
     ${snaps}
   `);
 }
+async function createSnapshot() {
+  const label = document.getElementById('snapshotLabel')?.value || '手动安全快照';
+  const r = await api("/api/rollback/snapshot", { label });
+  if (r.ok) { toast("已创建真实 git 快照"); openRollbackModal(); render(); }
+  else toast(r.error || "创建失败");
+}
 async function requestRollback(id) {
   const r = await api("/api/rollback/request", { snapshot_id: id });
-  if (r.ok) { toast("已进确认队列：回退预览（不会真实 reset）"); closeModal(); render(); }
+  if (r.ok) { toast("已进确认队列：批准后会真实 git reset --hard"); closeModal(); render(); }
   else toast(r.error || "失败");
 }
 
@@ -509,7 +520,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.3 — 第一个「真实能力」里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>外发 / commit / PR / merge / rollback 仍是预览，需下一阶段接入并二次确认</b>。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.4 — Time Machine 真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；外发 / commit / PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>

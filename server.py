@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.3 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.4 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.3 主功能只承诺已经真实接入的能力：Keychain 密钥保险柜 + OpenAI-compatible 模型 API 调用。
-- 微信/邮件/Telegram 外发、Claude Code 执行、commit/PR/merge、rollback/reset 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
+- v0.4 主功能只承诺已经真实接入的能力：Keychain 密钥保险柜 + OpenAI-compatible 模型 API 调用 + git Time Machine / rollback。
+- 微信/邮件/Telegram 外发、Claude Code 执行、commit/PR/merge 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.3 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.4 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
-  并明确标注「可能产生费用」）。这是 v0.3 唯一会产生外部副作用的真实动作。
+  并明确标注「可能产生费用」）。
+- git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -31,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+import tempfile
 
 # --------------------------------------------------------------------------
 # 路径与常量
@@ -78,6 +80,11 @@ KEYCHAIN_SERVICE = os.environ.get("LINGTAI_SIMPLE_KEYCHAIN_SERVICE", "lingtai-si
 # 真实模型调用的安全上限（避免误操作烧钱）。
 MODEL_CALL_TIMEOUT = 30          # 秒
 MODEL_CALL_MAX_TOKENS = 256      # 单次测试回复上限
+
+# git Time Machine / rollback：只在本 repo 内操作，外部副作用无法回滚。
+SNAPSHOT_REF_PREFIX = "refs/lingtai-simple/snapshots"
+SAFETY_REF_PREFIX = "refs/lingtai-simple/safety"
+ROLLBACK_DIFF_MAX_CHARS = 6000
 
 # Claude Code 苦力权限等级（merge 必须显式确认）
 CC_PERMISSION_LEVELS = [
@@ -303,7 +310,7 @@ def keychain_has(provider_id):
 # --------------------------------------------------------------------------
 # 真实模型调用（OpenAI-compatible /chat/completions）
 # --------------------------------------------------------------------------
-# 这是 v0.3 唯一会产生真实外部副作用（网络请求 + 可能计费）的能力。
+# 这是会产生真实外部副作用（网络请求 + 可能计费）的能力之一；另一个真实本地副作用是 git rollback。
 # 必须由 UI 显式触发；key 从 Keychain 即时取用，绝不写入状态/日志/响应。
 
 def _chat_completions_url(base_url):
@@ -406,7 +413,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.3",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.4",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -417,14 +424,7 @@ def default_state():
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
         "wechat_inbox": [],    # 模拟微信任务队列
-        "snapshots": [         # mock 的 time machine 快照
-            {
-                "id": "snap_seed0001",
-                "created_at": now_iso(),
-                "label": "初始安全点（示例）",
-                "diff_preview": "(示例) 无改动 — 这是种子快照",
-            }
-        ],
+        "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
 
@@ -593,6 +593,10 @@ def add_approval(state, payload):
         "task_id": payload.get("task_id"),
         "agent_id": payload.get("agent_id"),
     }
+    # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id"):
+        if payload.get(k):
+            ap[k] = str(payload.get(k))
     state["approvals"].insert(0, ap)
     log_event(state, f"确认队列新增：{ap['title']}", kind="approval")
     return ap
@@ -607,7 +611,7 @@ def build_preview(action, payload):
         "code_commit": f"[git commit 预览 / 不会真实提交]\n{detail}",
         "code_pr": f"[开 PR 预览 / 不会真实创建]\n{detail}",
         "code_merge": f"[merge 预览 / 必须显式确认 / 不会真实合并]\n{detail}",
-        "rollback_apply": f"[rollback 预览 / 不会真实 reset]\n{detail}",
+        "rollback_apply": f"[rollback 预览 / 确认后会真实 git reset --hard]\n{detail}",
         "delete_agent": f"[删除灵预览 / mock]\n{detail}",
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
     }
@@ -621,8 +625,13 @@ def resolve_approval(state, approval_id, decision):
                 return None, "该项已处理"
             if decision == "approve":
                 ap["status"] = "已确认"
-                _apply_approved_action(state, ap)
-                log_event(state, f"已确认（mock 执行）：{ap['title']}", kind="approval")
+                err = _apply_approved_action(state, ap)
+                if err:
+                    ap["status"] = "执行失败"
+                    ap["result"] = err
+                    log_event(state, f"确认后执行失败：{ap['title']}（{err[:80]}）", kind="approval")
+                else:
+                    log_event(state, f"已确认并执行：{ap['title']}", kind="approval")
             else:
                 ap["status"] = "已拒绝"
                 # 关联任务标记拒绝
@@ -639,19 +648,26 @@ def resolve_approval(state, approval_id, decision):
 
 
 def _apply_approved_action(state, ap):
-    """确认后的 mock 执行：绝不产生真实副作用。"""
+    """确认后的执行。仅 rollback_apply 当前会产生真实本地 git 副作用。"""
     action = ap["action"]
+    if action == "rollback_apply":
+        result, err = rollback_apply_real(state, ap.get("rollback_ref"))
+        if err:
+            return err
+        ap["result"] = result
+        return None
     if action == "delete_agent" and ap.get("agent_id"):
         state["agents"] = [a for a in state["agents"] if a["id"] != ap["agent_id"]]
-        log_event(state, "（mock）已删除灵")
+        log_event(state, "（本地状态）已删除灵")
     if ap.get("task_id"):
         for t in state["tasks"]:
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
-                t["result"] = f"(mock) 已确认并执行：{action}"
+                t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
                 if ag:
                     ag["status"] = "待命"
+    return None
 
 
 def _provider_entry(state, provider_id):
@@ -838,7 +854,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.3（本地原型 / Keychain 与模型 API 已真实接入；其他执行按未接入标注）")
+    lines.append("> 圆酱专属轻量版灵台 v0.4（本地原型 / Keychain、模型 API、git Time Machine 已真实接入；微信 bot 与 Claude Code 仍在接入中）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -870,7 +886,7 @@ def generate_shougong(state):
     lines.append("- 检查 context 压力高的灵，必要时收束 / 凝蜕。")
     lines.append("")
     lines.append("## 🚧 边界提醒")
-    lines.append("- 本原型不真实发送任何消息、不真实改码/PR/merge、不真实 rollback。")
+    lines.append("- 本原型不真实发送任何消息、不真实改码/PR/merge；Time Machine / rollback 已真实接入，但只能回滚本仓库文件，不能撤回外部副作用。")
     lines.append("- API key 仅以「已配置 + 后四位」形式保存，界面不回显明文。")
     md = "\n".join(lines)
 
@@ -883,25 +899,186 @@ def generate_shougong(state):
     return {"markdown": md, "path": fpath, "filename": fname}
 
 
-def rollback_preview(state):
-    """只 mock 列出 snapshot 与 diff，不真实 reset。"""
+def _git(args, timeout=10, extra_env=None, check=True):
+    """Run git in BASE_DIR with deterministic, non-interactive settings."""
+    env = os.environ.copy()
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    })
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.run(["git"] + list(args), cwd=BASE_DIR, env=env,
+                          text=True, capture_output=True, timeout=timeout)
+    if check and proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "git command failed").strip()
+        raise RuntimeError(redact(msg)[:500])
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+
+def _git_available():
+    return os.path.isdir(os.path.join(BASE_DIR, ".git")) and shutil.which("git") is not None
+
+
+def _short_ref(ref):
+    return ref.split("/")[-1]
+
+
+def _bounded(text, limit=ROLLBACK_DIFF_MAX_CHARS):
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...（已截断，原文 {len(text)} 字符）"
+
+
+def _validate_lingtai_ref(ref):
+    ref = (ref or "").strip()
+    if not (ref.startswith(SNAPSHOT_REF_PREFIX + "/") or ref.startswith(SAFETY_REF_PREFIX + "/")):
+        return None, "只允许回退到 LingTai Simple 自己创建的 snapshot/safety ref"
+    try:
+        commit, _, _ = _git(["rev-parse", "--verify", f"{ref}^{{commit}}"])
+    except Exception as e:
+        return None, f"快照不存在或不是 commit：{e}"
+    return commit.strip(), None
+
+
+def _create_tree_commit_ref(prefix, label):
+    """Create a ref commit from the current working tree without moving HEAD/index."""
+    if not _git_available():
+        raise RuntimeError("当前目录不是 git 仓库，无法创建 Time Machine 快照")
+    head, _, _ = _git(["rev-parse", "--verify", "HEAD"])
+    safe_label = re.sub(r"[^0-9A-Za-z_.\-\u4e00-\u9fff ]+", "-", (label or "snapshot")).strip()[:80] or "snapshot"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ref = f"{prefix}/{stamp}-{uuid.uuid4().hex[:8]}"
+    with tempfile.TemporaryDirectory(prefix="lingtai-simple-index-") as td:
+        idx = os.path.join(td, "index")
+        env = {"GIT_INDEX_FILE": idx}
+        _git(["read-tree", "HEAD"], extra_env=env)
+        # Capture tracked modifications and untracked non-ignored files; ignored runtime state stays out.
+        _git(["add", "-A", "--", "."], extra_env=env)
+        tree, _, _ = _git(["write-tree"], extra_env=env)
+        created_at = now_iso()
+        message = f"LingTai Simple Time Machine: {safe_label}\n\nCreated-By: yuanjiang-lingtai-simple\nCreated-At: {created_at}\n"
+        commit_env = {
+            **env,
+            "GIT_AUTHOR_NAME": "Yuanjiang LingTai Simple",
+            "GIT_AUTHOR_EMAIL": "yuanjiang-lingtai-simple@local",
+            "GIT_COMMITTER_NAME": "Yuanjiang LingTai Simple",
+            "GIT_COMMITTER_EMAIL": "yuanjiang-lingtai-simple@local",
+            "GIT_AUTHOR_DATE": created_at,
+            "GIT_COMMITTER_DATE": created_at,
+        }
+        commit, _, _ = _git(["commit-tree", tree, "-p", head, "-m", message], extra_env=commit_env)
+    _git(["update-ref", ref, commit])
     return {
-        "snapshots": state["snapshots"],
-        "note": "Time Machine 只能（mock）预览文件级 diff。无法撤回已发微信/邮件/API/PR/merge 等外部副作用。点击 rollback 仅进入确认队列预览，不会真实 reset。",
+        "id": _short_ref(ref),
+        "ref": ref,
+        "commit": commit,
+        "short_commit": commit[:12],
+        "label": safe_label,
+        "created_at": now_iso(),
+    }
+
+
+def create_snapshot(state, payload):
+    label = (payload.get("label") or "手动安全快照").strip() if isinstance(payload, dict) else "手动安全快照"
+    try:
+        snap = _create_tree_commit_ref(SNAPSHOT_REF_PREFIX, label)
+    except Exception as e:
+        return None, f"创建快照失败：{e}"
+    log_event(state, f"Time Machine 创建真实快照：{snap['label']} ({snap['short_commit']})", kind="rollback")
+    return snap, None
+
+
+def _list_time_machine_refs():
+    if not _git_available():
+        return []
+    fmt = "%(refname)|%(objectname)|%(creatordate:iso8601)|%(subject)"
+    out, _, _ = _git(["for-each-ref", "--sort=-creatordate", f"--format={fmt}",
+                      SNAPSHOT_REF_PREFIX, SAFETY_REF_PREFIX], check=False)
+    items = []
+    for line in out.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        ref, commit, created_at, subject = parts
+        kind = "safety" if ref.startswith(SAFETY_REF_PREFIX + "/") else "snapshot"
+        items.append({
+            "id": _short_ref(ref),
+            "ref": ref,
+            "commit": commit,
+            "short_commit": commit[:12],
+            "created_at": created_at,
+            "label": subject.replace("LingTai Simple Time Machine: ", ""),
+            "kind": kind,
+            "diff_preview": _snapshot_diff_preview(ref),
+        })
+    return items
+
+
+def _snapshot_diff_preview(ref):
+    commit, err = _validate_lingtai_ref(ref)
+    if err:
+        return err
+    stat, _, _ = _git(["diff", "--stat", commit, "--"], timeout=10, check=False)
+    names, _, _ = _git(["diff", "--name-status", commit, "--"], timeout=10, check=False)
+    if not stat and not names:
+        return "当前工作区与该快照的 tracked 文件一致。"
+    return _bounded((stat + "\n" + names).strip())
+
+
+def rollback_preview(state):
+    snapshots = _list_time_machine_refs()
+    status, _, _ = _git(["status", "--short"], check=False) if _git_available() else ("", "", 1)
+    head, _, _ = _git(["rev-parse", "--short", "HEAD"], check=False) if _git_available() else ("", "", 1)
+    return {
+        "snapshots": snapshots,
+        "git_available": _git_available(),
+        "current_head": head,
+        "dirty": bool(status.strip()),
+        "status_short": _bounded(status, 2000),
+        "note": "Time Machine 已真实接入：可创建 git 安全快照、预览当前工作区到快照的 diff，并在确认队列批准后执行真实 git reset --hard。它只能回滚本仓库文件，无法撤回已发微信/邮件/API/PR/merge 等外部副作用。执行 rollback 前会再自动创建 safety 快照。",
     }
 
 
 def request_rollback(state, snapshot_id):
-    snap = next((s for s in state["snapshots"] if s["id"] == snapshot_id), None)
+    snapshots = _list_time_machine_refs()
+    snap = next((s for s in snapshots if s["id"] == snapshot_id or s["ref"] == snapshot_id), None)
     if not snap:
         return None, "找不到该快照"
+    commit, err = _validate_lingtai_ref(snap["ref"])
+    if err:
+        return None, err
     ap = add_approval(state, {
         "action": "rollback_apply",
         "title": f"回退到快照：{snap['label']}",
-        "detail": f"将（mock）回退到 {snap['id']}。\n{snap['diff_preview']}\n注意：无法撤回外部副作用。",
-        "preview": f"[Time Machine rollback 预览 / 不会真实 reset]\n快照：{snap['label']} ({snap['id']})\nDiff：{snap['diff_preview']}",
+        "detail": f"将真实执行 git reset --hard 到 {snap['short_commit']}。\n{snap['diff_preview']}\n注意：只能回滚本仓库文件，无法撤回外部副作用。执行前会自动创建 safety 快照。",
+        "preview": f"[Time Machine rollback 真实预览 / 确认后会 reset]\n快照：{snap['label']} ({snap['id']})\n目标 commit：{commit[:12]}\nDiff：\n{snap['diff_preview']}\n\n外部副作用（已发消息/API/PR/merge）无法撤回。",
+        "rollback_ref": snap["ref"],
+        "rollback_commit": commit,
+        "snapshot_id": snap["id"],
     })
     return ap, None
+
+
+def rollback_apply_real(state, ref):
+    commit, err = _validate_lingtai_ref(ref)
+    if err:
+        return None, err
+    try:
+        safety = _create_tree_commit_ref(SAFETY_REF_PREFIX, "rollback-before-current-state")
+        _git(["reset", "--hard", commit], timeout=20)
+    except Exception as e:
+        return None, f"rollback 执行失败：{e}"
+    result = {
+        "rolled_back_to": commit[:12],
+        "target_ref": ref,
+        "safety_ref": safety["ref"],
+        "safety_commit": safety["short_commit"],
+        "external_side_effects_note": "只能回滚本仓库文件；微信/邮件/API/PR/merge 等外部副作用无法撤回。",
+    }
+    log_event(state, f"Time Machine 已真实 rollback 到 {commit[:12]}；执行前 safety={safety['short_commit']}", kind="rollback")
+    return result, None
 
 
 def request_cc_task(state, payload):
@@ -932,10 +1109,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.3（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.4（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.3 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.4 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -950,10 +1127,11 @@ def health_check():
         "example_state": os.path.exists(EXAMPLE_STATE_PATH),
         "state_dir": os.path.isdir(DATA_DIR),
         "shougong_dir": os.path.isdir(SHOUGONG_DIR) or True,
+        "git_available": _git_available(),
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.3",
+        "version": "v0.4",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -961,7 +1139,8 @@ def health_check():
         "boundaries": [
             "localhost-only",
             "real model API calls require explicit UI action (may cost money)",
-            "not connected yet: WeChat/email/Telegram send, Claude Code execution, commit/PR/merge, rollback",
+            "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
+            "not connected yet: WeChat/email/Telegram send, Claude Code execution, commit/PR/merge",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1121,6 +1300,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/wechat/submit": lambda s, p: wechat_submit(s, p),
             "/api/demo/load": lambda s, p: load_demo_state(s, p),
             "/api/shougong": lambda s, p: (generate_shougong(s), None),
+            "/api/rollback/snapshot": lambda s, p: create_snapshot(s, p),
             "/api/rollback/request": lambda s, p: request_rollback(s, p.get("snapshot_id")),
             "/api/cc/request": lambda s, p: request_cc_task(s, p),
             "/api/reset": lambda s, p: self._reset(s, p),
@@ -1200,11 +1380,11 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.4 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
-    print("  边界 : localhost-only / Keychain + 模型 API 为真实能力 / 微信-CC-rollback 尚未接入")
+    print("  边界 : localhost-only / Keychain + 模型 API + git Time Machine 为真实能力 / 微信-CC 尚未接入")
     print("  停止 : Ctrl+C")
     print("=" * 64)
     try:
