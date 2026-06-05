@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.8 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.9 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.8 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit。
+- v0.9 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析、L2 本地改码、L3 本地 commit，以及 L4/L5 GitHub PR/merge 执行闸。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
-- Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit 已真实接入本地 git 提交确认闸；PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
+- Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.8 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.9 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
 - git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
 - 微信桥接入口：当前 LingTai/WeChat MCP 可把真实微信消息 POST 到本服务，本服务写入任务/确认队列并返回可原路回复的 `reply_text`。
-- Claude Code worker：L1 显式确认费用后调用本机 `claude --print` 做只读分析；L2 在隔离 git worktree 中允许本地改码，经 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L3 可在再次确认后创建真实本地 git commit，但不 push/PR/merge。
+- Claude Code worker：L1 显式确认费用后调用本机 `claude --print` 做只读分析；L2 在隔离 git worktree 中允许本地改码，经 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L3 可在再次确认后创建真实本地 git commit；L4 可在确认后 push 分支并创建 GitHub PR；L5 可在确认后 merge 指定 PR。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -106,6 +106,10 @@ CC_MAX_BUDGET_USD = os.environ.get("LINGTAI_SIMPLE_CC_MAX_BUDGET_USD", "0.50")
 DEMO_TIMESTAMP = "2026-06-05T08:00:00-07:00"
 COMMIT_AUTHOR_NAME = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_NAME", "Wang Runyuan")
 COMMIT_AUTHOR_EMAIL = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_EMAIL", "281843989+9s5bz2jvd2-lang@users.noreply.github.com")
+GITHUB_EXPECTED_LOGIN = os.environ.get("LINGTAI_SIMPLE_GITHUB_EXPECTED_LOGIN", "9s5bz2jvd2-lang")
+_DEFAULT_GH_CONFIG_DIR = "/Users/huangzesen/work/GitHub/lingtai/.worktrees/docs-beginner-work-manual/.gh-runyuan"
+GITHUB_CONFIG_DIR = os.environ.get("LINGTAI_SIMPLE_GH_CONFIG_DIR") or (_DEFAULT_GH_CONFIG_DIR if os.path.isdir(_DEFAULT_GH_CONFIG_DIR) else "")
+GITHUB_PR_BODY_MAX_CHARS = 6000
 
 
 _LOCK = threading.RLock()
@@ -426,7 +430,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.8",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.9",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -478,7 +482,7 @@ def normalize_state(state):
     """兼容旧版本 state.json：补齐 v0.8 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.8"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.9"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -633,7 +637,7 @@ def add_approval(state, payload):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
@@ -650,8 +654,8 @@ def build_preview(action, payload):
         "email_send": f"[邮件外发预览 / 不会真实发送]\n{detail}",
         "telegram_send": f"[Telegram 外发预览 / 不会真实发送]\n{detail}",
         "code_commit": f"[git commit 预览 / 确认后会真实创建本地 commit；不会 push/PR/merge]\n{detail}",
-        "code_pr": f"[开 PR 预览 / 不会真实创建]\n{detail}",
-        "code_merge": f"[merge 预览 / 必须显式确认 / 不会真实合并]\n{detail}",
+        "code_pr": f"[GitHub PR 预览 / 确认后会真实 push 分支并创建 PR]\n{detail}",
+        "code_merge": f"[GitHub merge 预览 / 确认后会真实合并指定 PR]\n{detail}",
         "rollback_apply": f"[rollback 预览 / 确认后会真实 git reset --hard]\n{detail}",
         "delete_agent": f"[删除灵预览 / mock]\n{detail}",
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
@@ -711,6 +715,34 @@ def _apply_approved_action(state, ap):
                     if ag:
                         ag["status"] = "待命"
         return None
+    if action == "code_pr":
+        result, err = github_pr_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        if ap.get("task_id"):
+            for t in state["tasks"]:
+                if t["id"] == ap["task_id"]:
+                    t["status"] = "完成"
+                    t["result"] = f"已真实创建 GitHub PR：{result.get('pr_url')}（未 merge）"
+                    ag = find_agent(state, t["agent_id"])
+                    if ag:
+                        ag["status"] = "待命"
+        return None
+    if action == "code_merge":
+        result, err = github_merge_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        if ap.get("task_id"):
+            for t in state["tasks"]:
+                if t["id"] == ap["task_id"]:
+                    t["status"] = "完成"
+                    t["result"] = f"已真实 merge GitHub PR：{result.get('pr_url') or result.get('pr_number')}"
+                    ag = find_agent(state, t["agent_id"])
+                    if ag:
+                        ag["status"] = "待命"
+        return None
     if action == "delete_agent" and ap.get("agent_id"):
         state["agents"] = [a for a in state["agents"] if a["id"] != ap["agent_id"]]
         log_event(state, "（本地状态）已删除灵")
@@ -718,7 +750,7 @@ def _apply_approved_action(state, ap):
         for t in state["tasks"]:
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
-                if action in ("wechat_send", "email_send", "telegram_send", "code_pr", "code_merge", "sensitive_task"):
+                if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
                     t["result"] = f"已确认：{action}；当前 v0.8 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
@@ -932,7 +964,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.8 当前状态：",
+        "圆酱，LingTai Simple v0.9 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1470,6 +1502,383 @@ def git_commit_apply_real(state, ap):
     return result, None
 
 
+
+def _gh_env():
+    """Environment for gh CLI. Never prints or stores tokens."""
+    env = os.environ.copy()
+    env.update({"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
+    if GITHUB_CONFIG_DIR:
+        env["GH_CONFIG_DIR"] = GITHUB_CONFIG_DIR
+    return env
+
+
+def _gh(args, timeout=30, check=True):
+    if not shutil.which("gh"):
+        raise RuntimeError("本机找不到 gh CLI，无法执行真实 GitHub PR/merge。")
+    proc = subprocess.run(["gh"] + list(args), cwd=BASE_DIR, env=_gh_env(),
+                          text=True, capture_output=True, timeout=timeout)
+    if check and proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "gh command failed").strip()
+        raise RuntimeError(redact(msg)[:800])
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
+
+
+def _github_login_check():
+    if not shutil.which("gh"):
+        return None, "本机找不到 gh CLI，无法执行真实 GitHub PR/merge。"
+    try:
+        login, _, _ = _gh(["api", "user", "--jq", ".login"], timeout=20)
+    except Exception as e:
+        return None, f"GitHub 登录态不可用或未授权：{e}"
+    login = login.strip()
+    if GITHUB_EXPECTED_LOGIN and login != GITHUB_EXPECTED_LOGIN:
+        return None, f"当前 gh 登录账号是 {login}，不是预期的 {GITHUB_EXPECTED_LOGIN}；为避免用错账号，已拒绝。"
+    return login, None
+
+
+def _github_repo_slug():
+    try:
+        repo, _, _ = _gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], timeout=20)
+        if repo.strip():
+            return repo.strip(), None
+    except Exception as e:
+        return None, f"无法识别当前 GitHub 仓库：{e}"
+    return None, "无法识别当前 GitHub 仓库。"
+
+
+def _remote_default_branch():
+    out, _, rc = _git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], timeout=10, check=False)
+    if rc == 0 and out.strip().startswith("origin/"):
+        return out.strip().split("/", 1)[1]
+    for candidate in ("main", "master"):
+        _, _, rc = _git(["rev-parse", "--verify", f"origin/{candidate}^{{commit}}"], timeout=10, check=False)
+        if rc == 0:
+            return candidate
+    return "main"
+
+
+def _safe_branch_name(raw, prefix="lingtai-simple/pr"):
+    raw = (raw or "").strip()
+    if not raw:
+        raw = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    raw = raw.replace("refs/heads/", "")
+    raw = re.sub(r"[^0-9A-Za-z._/-]+", "-", raw).strip("/.-")
+    raw = re.sub(r"/+", "/", raw)
+    if not raw:
+        raw = f"{prefix}-{uuid.uuid4().hex[:6]}"
+    if raw in ("main", "master", "develop", "dev"):
+        raw = f"{prefix}-{raw}-{uuid.uuid4().hex[:6]}"
+    if raw.startswith("-") or raw.endswith("-"):
+        raw = raw.strip("-") or f"{prefix}-{uuid.uuid4().hex[:6]}"
+    return raw[:160]
+
+
+def _sanitize_pr_title(text):
+    title = redact((text or "").strip())
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        title = "Update LingTai Simple"
+    if len(title) > 180:
+        title = title[:177].rstrip() + "..."
+    if _looks_like_secret(title):
+        return None, "PR title 疑似包含 API key / token；请删除凭证后再发起。"
+    return title, None
+
+
+def _sanitize_pr_body(text):
+    body = redact((text or "").strip())
+    if _looks_like_secret(body):
+        return None, "PR body 疑似包含 API key / token；请删除凭证后再发起。"
+    if not body:
+        body = "Created by Yuanjiang LingTai Simple after explicit confirmation."
+    return _bounded(body, GITHUB_PR_BODY_MAX_CHARS), None
+
+
+def _extract_pr_number(text):
+    text = (text or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"(?:/pull/|#)(\d+)\b", text)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"\d+", text):
+        return text
+    return ""
+
+
+def _sanitize_base_branch(base_branch):
+    """Sanitize an existing base branch name without rewriting main/master."""
+    base_branch = (base_branch or "main").strip().replace("refs/heads/", "")
+    base_branch = re.sub(r"[^0-9A-Za-z._/-]+", "-", base_branch).strip("/.-")
+    base_branch = re.sub(r"/+", "/", base_branch)
+    return (base_branch or "main")[:160]
+
+
+def _ensure_origin_base(base_branch):
+    base_branch = _sanitize_base_branch(base_branch)
+    _git(["fetch", "origin", base_branch], timeout=60, check=False)
+    _, _, rc = _git(["rev-parse", "--verify", f"origin/{base_branch}^{{commit}}"], timeout=10, check=False)
+    if rc != 0:
+        return None, f"找不到远端 base 分支 origin/{base_branch}；请先推送或换一个 base_branch。"
+    return base_branch, None
+
+
+
+def _git_push_with_gh_auth(refspec, timeout=120):
+    """Run git push using gh auth token through GIT_ASKPASS; never prints the token."""
+    if not shutil.which("gh"):
+        raise RuntimeError("本机找不到 gh CLI，无法通过 GitHub 登录态 push。")
+    script = None
+    try:
+        fd, script = tempfile.mkstemp(prefix="lingtai-simple-gh-askpass-", text=True)
+        gh_dir_line = f'export GH_CONFIG_DIR={json.dumps(GITHUB_CONFIG_DIR)}\n' if GITHUB_CONFIG_DIR else ""
+        body = "#!/bin/sh\n" + gh_dir_line + "case \"$1\" in\n*Username*) echo x-access-token ;;&\n*Password*) gh auth token ;;&\n*) echo x-access-token ;;&\nesac\n"
+        # POSIX sh does not support ;;& on macOS sh; write portable version instead.
+        body = "#!/bin/sh\n" + gh_dir_line + "case \"$1\" in\n*Username*) echo x-access-token ;;\n*Password*) gh auth token ;;\n*) echo x-access-token ;;\nesac\n"
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.chmod(script, 0o700)
+        env = {"GIT_ASKPASS": script, "GIT_USERNAME": "x-access-token"}
+        if GITHUB_CONFIG_DIR:
+            env["GH_CONFIG_DIR"] = GITHUB_CONFIG_DIR
+        return _git(["push", "origin", refspec], timeout=timeout, extra_env=env)
+    finally:
+        if script:
+            try:
+                os.remove(script)
+            except OSError:
+                pass
+
+def prepare_github_pr_approval(state, payload):
+    """Queue a confirmation-gated real GitHub PR creation (L4)."""
+    if not _git_available():
+        return None, "当前目录不是 git 仓库，无法创建 GitHub PR。"
+    login, err = _github_login_check()
+    if err:
+        return None, err
+    repo, err = _github_repo_slug()
+    if err:
+        return None, err
+    out, _, _ = _git(["status", "--porcelain"], timeout=10)
+    if out.strip():
+        return None, "工作区有未提交改动；请先用 L3 commit 或人工处理到干净状态，再创建 PR。"
+    base_branch = (payload.get("base_branch") or _remote_default_branch()).strip()
+    base_branch, err = _ensure_origin_base(base_branch)
+    if err:
+        return None, err
+    head_commit, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
+    ahead, _, _ = _git(["rev-list", "--count", f"origin/{base_branch}..HEAD"], timeout=10, check=False)
+    try:
+        ahead_count = int((ahead or "0").strip())
+    except ValueError:
+        ahead_count = 0
+    if ahead_count <= 0:
+        return None, f"当前 HEAD 相对 origin/{base_branch} 没有新 commit；无法创建有内容的 PR。请先完成 L3 commit。"
+    title, err = _sanitize_pr_title(payload.get("pr_title") or payload.get("title") or payload.get("description") or "Update LingTai Simple")
+    if err:
+        return None, err
+    default_body = "\n".join([
+        "## Summary",
+        f"- Created by Yuanjiang LingTai Simple v0.9 after explicit confirmation.",
+        f"- Base: `{base_branch}`",
+        f"- Head commit: `{head_commit[:12]}`",
+        "",
+        "## Safety",
+        "- Worktree was clean at preview time.",
+        "- This action will push a branch and create a GitHub PR only; it will not merge.",
+    ])
+    body, err = _sanitize_pr_body(payload.get("pr_body") or default_body)
+    if err:
+        return None, err
+    branch = _safe_branch_name(payload.get("branch_name") or payload.get("head_branch"), prefix="lingtai-simple/pr")
+    if branch in (base_branch, "main", "master"):
+        return None, "PR head branch 不能等于 base/main/master。"
+    stat, _, _ = _git(["diff", "--stat", f"origin/{base_branch}..HEAD"], timeout=20, check=False)
+    commits, _, _ = _git(["log", "--oneline", f"origin/{base_branch}..HEAD"], timeout=20, check=False)
+    detail = "\n".join([
+        f"GitHub repo：{repo}",
+        f"GitHub login：{login}",
+        f"base：{base_branch}",
+        f"head branch：{branch}",
+        f"head commit：{head_commit}",
+        f"commits ahead：{ahead_count}",
+        f"PR title：{title}",
+        "边界：确认后会真实 git push 到 GitHub 并创建 PR；不会 merge。",
+        "commits：",
+        _bounded(commits, 1800),
+        "diff stat：",
+        _bounded(stat, 1800),
+    ])
+    ap = add_approval(state, {
+        "action": "code_pr",
+        "title": "Claude Code 苦力：允许开 PR（真实 GitHub PR）",
+        "detail": detail,
+        "preview": f"[GitHub PR 预览 / 确认后真实 push + create PR]\n{detail}",
+        "github_repo": repo,
+        "github_base_branch": base_branch,
+        "github_head_branch": branch,
+        "github_head_commit": head_commit,
+        "github_pr_title": title,
+        "github_pr_body": body,
+    })
+    log_event(state, f"真实 GitHub PR 已进入确认队列：{title}", kind="github")
+    return {"queued_approval": ap["id"], "level": 4, "real_executor": True, "repo": repo, "base_branch": base_branch, "head_branch": branch, "head_commit": head_commit}, None
+
+
+def github_pr_apply_real(state, ap):
+    """Push a branch and create a real GitHub PR after explicit approval. Does not merge."""
+    login, err = _github_login_check()
+    if err:
+        return None, err
+    repo, err = _github_repo_slug()
+    if err:
+        return None, err
+    if ap.get("github_repo") and ap.get("github_repo") != repo:
+        return None, f"确认时仓库已变化：预览为 {ap.get('github_repo')}，当前为 {repo}；已拒绝。"
+    out, _, _ = _git(["status", "--porcelain"], timeout=10)
+    if out.strip():
+        return None, "确认时工作区出现未提交改动；为避免把未审阅内容带入 PR，已拒绝。"
+    head_commit, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
+    if ap.get("github_head_commit") and head_commit != ap.get("github_head_commit"):
+        return None, "确认时 HEAD 与预览时不一致；请重新发起 L4 PR 请求。"
+    base_branch = ap.get("github_base_branch") or _remote_default_branch()
+    base_branch, err = _ensure_origin_base(base_branch)
+    if err:
+        return None, err
+    branch = _safe_branch_name(ap.get("github_head_branch"), prefix="lingtai-simple/pr")
+    if branch in (base_branch, "main", "master"):
+        return None, "PR head branch 不安全，已拒绝。"
+    ahead, _, _ = _git(["rev-list", "--count", f"origin/{base_branch}..HEAD"], timeout=10, check=False)
+    if int((ahead or "0").strip() or "0") <= 0:
+        return None, f"确认时 HEAD 相对 origin/{base_branch} 已无新 commit；已拒绝创建空 PR。"
+    # Refuse overwriting an existing remote branch unless it already points to the same commit.
+    remote_head, _, rc = _git(["ls-remote", "--heads", "origin", branch], timeout=20, check=False)
+    if rc == 0 and remote_head.strip():
+        remote_commit = remote_head.split()[0]
+        if remote_commit != head_commit:
+            return None, f"远端分支 origin/{branch} 已存在且不是当前 commit；为避免覆盖，已拒绝。"
+    _git_push_with_gh_auth(f"HEAD:refs/heads/{branch}", timeout=120)
+    title = ap.get("github_pr_title") or "Update LingTai Simple"
+    body = ap.get("github_pr_body") or "Created by Yuanjiang LingTai Simple."
+    out, _, _ = _gh(["pr", "create", "--repo", repo, "--base", base_branch, "--head", branch,
+                     "--title", title, "--body", body], timeout=60)
+    pr_url = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    pr_number = _extract_pr_number(pr_url)
+    ap["github_pr_url"] = pr_url
+    if pr_number:
+        ap["github_pr_number"] = pr_number
+    result = {
+        "repo": repo,
+        "login": login,
+        "base_branch": base_branch,
+        "head_branch": branch,
+        "head_commit": head_commit,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "boundary": "created real GitHub PR only; not merged",
+    }
+    log_event(state, f"真实 GitHub PR 已创建：{pr_url or pr_number}", kind="github")
+    return result, None
+
+
+def prepare_github_merge_approval(state, payload):
+    """Queue a confirmation-gated real GitHub PR merge (L5)."""
+    login, err = _github_login_check()
+    if err:
+        return None, err
+    repo, err = _github_repo_slug()
+    if err:
+        return None, err
+    raw_pr = payload.get("pr_number") or payload.get("pr") or payload.get("pr_url") or payload.get("description") or ""
+    pr_number = _extract_pr_number(str(raw_pr))
+    if not pr_number:
+        return None, "L5 merge 需要在 description/pr_number/pr_url 中写清楚 PR 编号或 URL，例如 `#12` 或 `/pull/12`。"
+    try:
+        info, _, _ = _gh(["pr", "view", pr_number, "--repo", repo,
+                          "--json", "number,title,state,baseRefName,headRefName,url,mergeable,isDraft,author",
+                          "--jq", "."], timeout=30)
+        info_obj = json.loads(info)
+    except Exception as e:
+        return None, f"无法读取 PR #{pr_number}：{e}"
+    if info_obj.get("state") != "OPEN":
+        return None, f"PR #{pr_number} 当前状态不是 OPEN（{info_obj.get('state')}），不能进入 merge 确认队列。"
+    if info_obj.get("isDraft"):
+        return None, f"PR #{pr_number} 仍是 draft，不能 merge。"
+    method = (payload.get("merge_method") or "merge").strip().lower()
+    if method not in ("merge", "squash", "rebase"):
+        return None, "merge_method 只能是 merge / squash / rebase。"
+    detail = "\n".join([
+        f"GitHub repo：{repo}",
+        f"GitHub login：{login}",
+        f"PR：#{info_obj.get('number')} {info_obj.get('title')}",
+        f"URL：{info_obj.get('url')}",
+        f"base：{info_obj.get('baseRefName')}",
+        f"head：{info_obj.get('headRefName')}",
+        f"mergeable：{info_obj.get('mergeable')}",
+        f"method：{method}",
+        "边界：确认后会真实执行 gh pr merge；这会改变远端 base 分支，不能用本地 rollback 撤回。",
+    ])
+    ap = add_approval(state, {
+        "action": "code_merge",
+        "title": f"Claude Code 苦力：允许 merge PR #{pr_number}（真实 GitHub merge）",
+        "detail": detail,
+        "preview": f"[GitHub merge 预览 / 确认后真实合并]\n{detail}",
+        "github_repo": repo,
+        "github_pr_number": str(pr_number),
+        "github_pr_url": info_obj.get("url") or "",
+        "github_base_branch": info_obj.get("baseRefName") or "",
+        "github_head_branch": info_obj.get("headRefName") or "",
+        "github_merge_method": method,
+    })
+    log_event(state, f"真实 GitHub merge 已进入确认队列：PR #{pr_number}", kind="github")
+    return {"queued_approval": ap["id"], "level": 5, "real_executor": True, "repo": repo, "pr_number": str(pr_number), "pr_url": info_obj.get("url")}, None
+
+
+def github_merge_apply_real(state, ap):
+    """Merge a real GitHub PR after explicit approval."""
+    login, err = _github_login_check()
+    if err:
+        return None, err
+    repo, err = _github_repo_slug()
+    if err:
+        return None, err
+    if ap.get("github_repo") and ap.get("github_repo") != repo:
+        return None, f"确认时仓库已变化：预览为 {ap.get('github_repo')}，当前为 {repo}；已拒绝。"
+    pr_number = _extract_pr_number(ap.get("github_pr_number") or ap.get("github_pr_url") or "")
+    if not pr_number:
+        return None, "确认项缺少 PR 编号；已拒绝 merge。"
+    try:
+        info, _, _ = _gh(["pr", "view", pr_number, "--repo", repo,
+                          "--json", "number,title,state,baseRefName,headRefName,url,mergeable,isDraft",
+                          "--jq", "."], timeout=30)
+        info_obj = json.loads(info)
+    except Exception as e:
+        return None, f"确认时无法读取 PR #{pr_number}：{e}"
+    if info_obj.get("state") != "OPEN":
+        return None, f"确认时 PR #{pr_number} 状态不是 OPEN（{info_obj.get('state')}），已拒绝。"
+    if info_obj.get("isDraft"):
+        return None, f"确认时 PR #{pr_number} 仍是 draft，已拒绝。"
+    if ap.get("github_base_branch") and info_obj.get("baseRefName") != ap.get("github_base_branch"):
+        return None, "确认时 PR base 分支已变化；请重新发起 L5 merge 请求。"
+    if ap.get("github_head_branch") and info_obj.get("headRefName") != ap.get("github_head_branch"):
+        return None, "确认时 PR head 分支已变化；请重新发起 L5 merge 请求。"
+    method = (ap.get("github_merge_method") or "merge").strip().lower()
+    flag = {"merge": "--merge", "squash": "--squash", "rebase": "--rebase"}.get(method, "--merge")
+    out, _, _ = _gh(["pr", "merge", pr_number, "--repo", repo, flag, "--delete-branch"], timeout=120)
+    result = {
+        "repo": repo,
+        "login": login,
+        "pr_number": str(pr_number),
+        "pr_url": info_obj.get("url") or ap.get("github_pr_url") or "",
+        "base_branch": info_obj.get("baseRefName"),
+        "head_branch": info_obj.get("headRefName"),
+        "merge_method": method,
+        "gh_output": _bounded(redact(out), 2000),
+        "boundary": "merged real GitHub PR; external side effect cannot be undone by local rollback",
+    }
+    log_event(state, f"真实 GitHub PR 已 merge：#{pr_number}", kind="github")
+    return result, None
+
 def prepare_cc_readonly_run(state, payload):
     desc = (payload.get("description") or "").strip()
     if not desc:
@@ -1804,26 +2213,19 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.8 真实接入 L1/L2/L3；L4+ 仍进入确认队列但不执行。"""
+    """Claude Code 苦力卡：v0.9 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
-    desc = (payload.get("description") or "").strip() or "（无描述）"
-    meta = next((l for l in CC_PERMISSION_LEVELS if l["level"] == level), CC_PERMISSION_LEVELS[0])
     if level == 1:
-        return None, "Claude Code L1 只读分析已是真实外部调用；请通过专用处理器并勾选费用确认。"
+        return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
     if level == 2:
         return None, "Claude Code L2 本地改码已是真实外部调用并会修改本仓库文件；请通过专用处理器并勾选费用/本地改动确认。"
     if level == 3:
         return prepare_cc_commit_approval(state, payload)
-    action_map = {4: "code_pr", 5: "code_merge"}
-    action = action_map.get(level, "code_pr")
-    ap = add_approval(state, {
-        "action": action,
-        "title": f"Claude Code 苦力：{meta['label']}（执行器未接入）",
-        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.8 已真实接入 L1 只读分析、L2 本地改码与 L3 本地 commit；PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已开 PR 或 merge。",
-        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前 L1/L2/L3 可真实执行；L4+ 等后续接入 GitHub PR 与 merge 确认闸。",
-    })
-    return {"queued_approval": ap["id"], "level": level, "real_executor": False}, None
-
+    if level == 4:
+        return prepare_github_pr_approval(state, payload)
+    if level == 5:
+        return prepare_github_merge_approval(state, payload)
+    return prepare_github_pr_approval(state, payload)
 
 def load_demo_state(_state=None, _payload=None):
     """把 data/state.example.json 载入运行态，方便圆酱打开就看见完整效果。"""
@@ -1832,7 +2234,7 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.8（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.9（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
     log_event(demo, "加载示例数据：圆酱专属灵台 v0.8 demo")
@@ -1852,10 +2254,11 @@ def health_check():
         "shougong_dir": os.path.isdir(SHOUGONG_DIR) or True,
         "git_available": _git_available(),
         "claude_code_available": claude_code_available(),
+        "github_cli_available": shutil.which("gh") is not None,
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.8",
+        "version": "v0.9",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -1867,8 +2270,10 @@ def health_check():
             "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
             "real Claude Code L1 read-only analysis worker (explicit cost confirmation required)",
             "real Claude Code L2 local-edit worker: isolated worktree, validation, patch apply to this repo",
-            "real Claude Code L3 commit executor: confirmation-gated local git commit only; no push/PR/merge",
-            "not connected yet: autonomous standalone WeChat poller, Claude Code PR/merge",
+            "real Claude Code L3 commit executor: confirmation-gated local git commit only",
+            "real Claude Code L4 PR executor: confirmation-gated branch push + GitHub PR creation",
+            "real Claude Code L5 merge executor: confirmation-gated GitHub PR merge",
+            "not connected yet: autonomous standalone WeChat poller",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1879,7 +2284,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.1"
+    server_version = "LingTaiSimple/0.9"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -2166,7 +2571,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.8 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.9 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
