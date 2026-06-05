@@ -1,10 +1,10 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.7
+# 圆酱专属轻量版灵台 / LingTai Simple v0.8
 
-这是“傻瓜版灵台”的本地可运行原型。v0.7 在 v0.6 的 **Mac Keychain、真实模型 API、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析** 基础上，新增 **真实 Claude Code L2 本地改码 worker**。
+这是“傻瓜版灵台”的本地可运行原型。v0.8 在 v0.7 的 **Mac Keychain、真实模型 API、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析与 L2 本地改码** 基础上，新增 **真实 Claude Code L3 本地 commit executor**。
 
-核心原则：每一项都诚实标注。已接入的能力就真实可用；未接入的 commit / PR / merge 不冒充完成。
+核心原则：每一项都诚实标注。已接入的能力就真实可用；未接入的 PR / merge 不冒充完成。L3 只会创建本地 git commit，不会 push、不会开 PR、不会 merge。
 
-## v0.7 已真实接入
+## v0.8 已真实接入
 
 1. **Mac Keychain 密钥保险箱**
    - API key 只写入 macOS Keychain。
@@ -37,11 +37,19 @@
    - Claude 修改完成后生成 patch；通过 `py_compile` 与高置信秘密扫描后，才把 patch 应用回本仓库。
    - 不 commit、不 PR、不 merge；改动留在本地供人工审查。
 
+7. **真实 Claude Code L3 本地 commit（不 push / 不 PR / 不 merge）**
+   - `level=3` 时不调用外部模型；它只把当前本仓库未提交改动整理成一个确认项。
+   - 入队前会检查：仓库有未提交改动、文件数不超过 120、`py_compile` 通过、高置信秘密扫描通过。
+   - 确认项会记录当时已审阅的文件清单和 commit message。
+   - 批准后再次复查：工作区文件清单必须与预览时完全一致，否则拒绝 commit。
+   - 批准后只对已审阅文件执行 `git add -- <files>` 并创建真实本地 git commit；提交身份默认是 `Wang Runyuan <281843989+9s5bz2jvd2-lang@users.noreply.github.com>`。
+   - commit 前创建 `refs/lingtai-simple/safety/pre-commit-*` 安全 ref。
+
 ## 尚未真实接入
 
-- **Claude Code L3+ commit / PR / merge**：仍只进入确认队列并诚实标注，不会假装已提交或已开 PR。
+- **Claude Code L4 PR / L5 merge**：仍只进入确认队列并诚实标注，不会假装已开 PR 或 merge。
 - **独立常驻微信 runner**：当前是桥接 endpoint，需要现有 LingTai WeChat MCP 转发。
-- **完整 LingTai runtime/mailbox/skills/memory 接入**：v0.7 仍是轻量控制层原型。
+- **完整 LingTai runtime/mailbox/skills/memory 接入**：v0.8 仍是轻量控制层原型。
 
 ## 运行
 
@@ -57,17 +65,13 @@ python3 server.py
 ### L1 只读分析
 
 ```bash
-curl -s -X POST http://127.0.0.1:8765/api/cc/request \
-  -H 'Content-Type: application/json' \
-  -d '{"level":1,"description":"只读分析 README 结构","confirm_cost":true}'
+curl -s -X POST http://127.0.0.1:8765/api/cc/request   -H 'Content-Type: application/json'   -d '{"level":1,"description":"只读分析 README 结构","confirm_cost":true}'
 ```
 
 ### L2 本地改码
 
 ```bash
-curl -s -X POST http://127.0.0.1:8765/api/cc/request \
-  -H 'Content-Type: application/json' \
-  -d '{"level":2,"description":"把 README 里某段改得更清楚，不要提交","confirm_cost":true}'
+curl -s -X POST http://127.0.0.1:8765/api/cc/request   -H 'Content-Type: application/json'   -d '{"level":2,"description":"把 README 里某段改得更清楚，不要提交","confirm_cost":true}'
 ```
 
 L2 成功后请立刻查看：
@@ -78,7 +82,14 @@ git diff --stat
 git diff
 ```
 
-如不满意，可用 Time Machine / rollback 或普通 git 丢弃改动。
+### L3 本地 commit
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/cc/request   -H 'Content-Type: application/json'   -d '{"level":3,"description":"feat: describe the current local changes"}'
+# 查看返回的 queued_approval，然后在 UI 或 API 中批准该确认项。
+```
+
+L3 只创建本地 commit。它不会 push、不会开 PR、不会 merge。
 
 ## API 摘要
 
@@ -93,8 +104,8 @@ git diff
 | POST | `/api/wechat/bridge/mark_sent` | 标记桥接回复已发 |
 | POST | `/api/rollback/snapshot` | 创建真实 git 快照 |
 | POST | `/api/rollback/request` | 请求 rollback，进入确认队列 |
-| POST | `/api/approval/approve` | 批准确认项；rollback 会真实执行 |
-| POST | `/api/cc/request` | Claude Code：L1 只读分析、L2 本地改码真实执行；L3+ 仅确认队列 |
+| POST | `/api/approval/approve` | 批准确认项；rollback 与 L3 commit 会真实执行本地 git 动作 |
+| POST | `/api/cc/request` | Claude Code：L1 只读分析、L2 本地改码、L3 本地 commit 真实执行；L4/L5 仅确认队列 |
 | POST | `/api/shougong` | 生成收功单 |
 
 ## 自检
@@ -104,11 +115,12 @@ python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
 python3 scripts/self_check.py
 ```
 
-自检默认不会烧外部 Claude Code 或模型费用；它验证未确认费用时会拒绝真实外部调用，并验证 L3+ 仍只进入确认队列。
+自检默认不会烧外部 Claude Code 或模型费用；它验证未确认费用时会拒绝真实外部调用，并验证 L3 在确认队列中暴露为真实本地 commit executor，但不会批准 commit。真实 commit apply 通过隔离 `/tmp` destructive smoke 验证。
 
 ## 安全边界
 
 - rollback 只能回滚本仓库 tracked/unignored 文件，不能撤回已发微信/邮件/API 请求/PR/merge 等外部副作用。
 - L2 本地改码会真实修改本仓库文件；运行前要求仓库干净，运行后必须人工看 diff。
-- 任何疑似 API key / token 的任务描述会被拒绝发送给 Claude Code。
-- commit / PR / merge 还没接通真实执行器；不会假装完成。
+- L3 本地 commit 会真实创建本地 git commit；它只暂存预览时已审阅且确认时仍一致的文件清单。
+- 任何疑似 API key / token 的任务描述会被拒绝发送给 Claude Code或写入 commit message。
+- PR / merge 还没接通真实执行器；不会假装完成。

@@ -1,68 +1,79 @@
-# LingTai Simple v0.7 Implementation Report
+# LingTai Simple v0.8 Implementation Report
 
 ## Summary
 
-v0.7 adds a real **Claude Code L2 local-edit worker** on top of v0.6's real Keychain vault, model API test, git Time Machine / rollback, WeChat bridge endpoint, and Claude Code L1 read-only analysis worker.
+v0.8 adds a real **Claude Code L3 local git commit executor** on top of v0.7's real Keychain vault, model API test, git Time Machine / rollback, WeChat bridge endpoint, Claude Code L1 read-only analysis worker, and Claude Code L2 local-edit worker.
 
-The new L2 path is intentionally narrow: it can modify local files, but it cannot commit, open PRs, or merge. Those remain confirmation-queue records until separate real executors are implemented.
+The new L3 path is intentionally narrow: it can create a local git commit after explicit confirmation, but it cannot push, open PRs, or merge. PR/merge remain confirmation-queue records until separate real executors are implemented.
 
-## Backend changes
+## Changed files
 
-- Version metadata updated to v0.7.
-- Added `CC_WORKTREE_DIR` under the system temp directory.
-- `/api/cc/request` now handles:
-  - `level=1`: real Claude Code read-only analysis.
-  - `level=2`: real Claude Code local edit.
-  - `level>=3`: confirmation queue only, `real_executor=false`.
-- L2 local edit flow:
-  1. Reject empty tasks, suspected secrets, missing cost/local-change confirmation, missing `claude`, or dirty main worktree.
-  2. Create a safety git ref before running.
-  3. Create an isolated detached git worktree.
-  4. Run `claude --print` with `--permission-mode acceptEdits`.
-  5. Allow only `Read,Grep,Glob,Edit,Write`; disallow `Bash,NotebookEdit,WebFetch,WebSearch`.
-  6. Convert worktree changes to a binary patch.
-  7. Run `python3 -m py_compile` on main Python entry files.
-  8. Run a high-confidence secret scan without printing matched secrets.
-  9. Apply the patch to the main repo only if validation passes.
-  10. Write a report under `data/cc_runs/<run_id>.md` with changed files, checks, output, and diff preview.
+- `server.py`
+  - Version metadata updated to v0.8.
+  - Added commit author defaults for Wang Runyuan.
+  - Added `prepare_cc_commit_approval()` for L3 confirmation preview.
+  - Added `git_commit_apply_real()` for confirmation-gated local git commit.
+  - Added approved-file-list persistence in approval records.
+  - Updated health boundaries and Claude Code L4/L5 copy.
+- `static/index.html`, `static/app.js`
+  - Updated UI copy to v0.8 and clarified L3 local commit is real.
+  - PR/merge remain not real.
+- `scripts/self_check.py`
+  - Updated version assertions to v0.8.
+  - Tests L3 queues a real executor confirmation without approving it.
+- `data/state.example.json`
+  - Updated demo title to v0.8.
+- `README.md`
+  - Documents exact real/not-real boundaries.
 
-## Frontend changes
+## L3 commit safety design
 
-- Updated version and labels to v0.7.
-- Claude Code button now says L1/L2 are real.
-- Claude modal explains:
-  - L1 is read-only analysis.
-  - L2 uses an isolated git worktree and may modify repo files.
-  - L3+ commit/PR/merge still only enter the confirmation queue.
-- Run history displays changed files, report path, output preview, and run status through existing `cc_runs` state.
+1. L3 does not call Claude Code or any external model.
+2. It inspects the current git worktree and queues a `code_commit` approval only when:
+   - git is available;
+   - there are uncommitted/untracked-unignored files;
+   - changed file count is not excessive;
+   - high-confidence secret scan passes;
+   - Python compile check passes.
+3. The approval stores:
+   - sanitized commit message;
+   - reviewed changed file list;
+   - preview text and diff stat;
+   - no secrets.
+4. On approval, the executor rechecks the current changed file list. If it differs from the preview-time list, commit is refused.
+5. It stages only the approved files using `git add -- <files>`, not `git add --all`.
+6. It creates `refs/lingtai-simple/safety/pre-commit-*` before committing.
+7. It commits with Wang Runyuan's GitHub noreply identity by default.
+8. It never pushes, opens PRs, merges, or claims to do so.
 
-## Docs and safety
+## Validation
 
-- README now documents exact L1 and L2 usage.
-- `.gitignore` includes runtime Claude Code reports; temporary L2 worktrees are created under the system temp directory.
-- L2 does not store or print secrets, and refuses task descriptions that look like credentials.
-- L2 does not start a shell through Claude; Bash is explicitly disallowed.
-- L2 does not commit, PR, or merge.
-
-## Validation performed
+Validated before release:
 
 ```bash
 python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
 python3 scripts/self_check.py
 ```
 
-Expected self-check output:
+Result:
 
 ```text
-OK LingTai Simple v0.7 self-check passed
+OK LingTai Simple v0.8 self-check passed
 ```
 
-Self-check does not burn external Claude Code tokens. It validates that L1/L2 reject without confirmation and that L3+ still routes to confirmation only.
+The regular self-check does not burn external Claude Code tokens and does not approve a commit. It validates that L1/L2 reject without confirmation and that L3 exposes a real confirmation-gated local commit executor.
 
-## Remaining work
+A destructive smoke test was run in an isolated `/tmp` copy of the repository: create a harmless README change, request L3, approve the queued approval, verify the resulting local commit author is Wang Runyuan, verify the committed file list is exactly the previewed file list, and verify no push/PR/merge happened.
 
-1. Real L3 commit executor with diff preview, author identity control, and confirmation gate.
-2. Real PR creation executor using 圆酱 GitHub identity and secret-safe token handling.
-3. Real merge executor with explicit WeChat/UI confirmation.
-4. Persistent WeChat bridge runner using the existing LingTai WeChat MCP as the only poller.
-5. Full LingTai runtime / skills / memory integration.
+Result:
+
+```text
+OK destructive L3 local commit smoke passed
+```
+
+## Still not implemented
+
+1. Real PR creation executor using 圆酱 GitHub identity and secret-safe token handling.
+2. Real merge executor with explicit WeChat/UI confirmation.
+3. Full LingTai runtime/mailbox/skills/memory integration.
+4. Independent always-on WeChat runner; current design still uses the existing LingTai WeChat MCP as bridge.

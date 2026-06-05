@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.7 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.8 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.7 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code 只读分析 worker。
+- v0.8 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
-- Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
+- Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit 已真实接入本地 git 提交确认闸；PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.7 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.8 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
 - git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
 - 微信桥接入口：当前 LingTai/WeChat MCP 可把真实微信消息 POST 到本服务，本服务写入任务/确认队列并返回可原路回复的 `reply_text`。
-- Claude Code worker：L1 显式确认费用后调用本机 `claude --print` 做只读分析；L2 在隔离 git worktree 中允许本地改码，经 py_compile 与高置信秘密扫描后把 patch 应用回本仓库，不 commit/PR/merge。
+- Claude Code worker：L1 显式确认费用后调用本机 `claude --print` 做只读分析；L2 在隔离 git worktree 中允许本地改码，经 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L3 可在再次确认后创建真实本地 git commit，但不 push/PR/merge。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -103,6 +103,9 @@ CC_PERMISSION_LEVELS = [
 CC_RUN_TIMEOUT = 240
 CC_MAX_OUTPUT_CHARS = 12000
 CC_MAX_BUDGET_USD = os.environ.get("LINGTAI_SIMPLE_CC_MAX_BUDGET_USD", "0.50")
+DEMO_TIMESTAMP = "2026-06-05T08:00:00-07:00"
+COMMIT_AUTHOR_NAME = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_NAME", "Wang Runyuan")
+COMMIT_AUTHOR_EMAIL = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_EMAIL", "281843989+9s5bz2jvd2-lang@users.noreply.github.com")
 
 
 _LOCK = threading.RLock()
@@ -423,7 +426,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.7",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.8",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -433,14 +436,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.7 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.8 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 只读分析运行记录（v0.7 真实接入 L1）
+        "cc_runs": [],          # Claude Code 运行记录（v0.8 真实接入 L1/L2；L3 是确认后本地 commit）
         "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
@@ -472,10 +475,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.7 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.8 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.7"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.8"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -630,9 +633,11 @@ def add_approval(state, payload):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
+    if payload.get("commit_changed_files"):
+        ap["commit_changed_files"] = [str(x) for x in payload.get("commit_changed_files", [])][:120]
     state["approvals"].insert(0, ap)
     log_event(state, f"确认队列新增：{ap['title']}", kind="approval")
     return ap
@@ -644,7 +649,7 @@ def build_preview(action, payload):
         "wechat_send": f"[微信外发预览 / 不会真实发送]\n收件人：圆酱\n内容：{detail}",
         "email_send": f"[邮件外发预览 / 不会真实发送]\n{detail}",
         "telegram_send": f"[Telegram 外发预览 / 不会真实发送]\n{detail}",
-        "code_commit": f"[git commit 预览 / 不会真实提交]\n{detail}",
+        "code_commit": f"[git commit 预览 / 确认后会真实创建本地 commit；不会 push/PR/merge]\n{detail}",
         "code_pr": f"[开 PR 预览 / 不会真实创建]\n{detail}",
         "code_merge": f"[merge 预览 / 必须显式确认 / 不会真实合并]\n{detail}",
         "rollback_apply": f"[rollback 预览 / 确认后会真实 git reset --hard]\n{detail}",
@@ -684,13 +689,27 @@ def resolve_approval(state, approval_id, decision):
 
 
 def _apply_approved_action(state, ap):
-    """确认后的执行。仅 rollback_apply 当前会产生真实本地 git 副作用。"""
+    """确认后的执行。rollback_apply 与 code_commit 会产生真实本地 git 副作用。"""
     action = ap["action"]
     if action == "rollback_apply":
         result, err = rollback_apply_real(state, ap.get("rollback_ref"))
         if err:
             return err
         ap["result"] = result
+        return None
+    if action == "code_commit":
+        result, err = git_commit_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        if ap.get("task_id"):
+            for t in state["tasks"]:
+                if t["id"] == ap["task_id"]:
+                    t["status"] = "完成"
+                    t["result"] = f"已创建真实本地 git commit：{result.get('commit_short')}（未 push / 未 PR / 未 merge）"
+                    ag = find_agent(state, t["agent_id"])
+                    if ag:
+                        ag["status"] = "待命"
         return None
     if action == "delete_agent" and ap.get("agent_id"):
         state["agents"] = [a for a in state["agents"] if a["id"] != ap["agent_id"]]
@@ -699,8 +718,8 @@ def _apply_approved_action(state, ap):
         for t in state["tasks"]:
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
-                if action in ("wechat_send", "email_send", "telegram_send", "code_commit", "code_pr", "code_merge", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.7 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
+                if action in ("wechat_send", "email_send", "telegram_send", "code_pr", "code_merge", "sensitive_task"):
+                    t["result"] = f"已确认：{action}；当前 v0.8 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -913,7 +932,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.7 当前状态：",
+        "圆酱，LingTai Simple v0.8 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1052,7 +1071,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.7 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.8 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -1082,7 +1101,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.7（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析已真实接入；改码/commit/PR/merge 仍在接入中）")
+    lines.append("> 圆酱专属轻量版灵台 v0.8（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已真实接入；PR/merge 仍在接入中）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -1114,7 +1133,7 @@ def generate_shougong(state):
     lines.append("- 检查 context 压力高的灵，必要时收束 / 凝蜕。")
     lines.append("")
     lines.append("## 🚧 边界提醒")
-    lines.append("- 本原型不真实发送任何消息；Time Machine / rollback 与 Claude Code L2 本地改码已真实接入，但只能作用于本仓库文件，不能撤回外部副作用；commit/PR/merge 仍未接入。")
+    lines.append("- 本原型不真实发送任何消息；Time Machine / rollback、Claude Code L2 本地改码与 L3 本地 commit 已真实接入，但只能作用于本仓库文件，不能撤回外部副作用；PR/merge 仍未接入。")
     lines.append("- API key 仅以「已配置 + 后四位」形式保存，界面不回显明文。")
     md = "\n".join(lines)
 
@@ -1325,6 +1344,130 @@ def _looks_like_secret(text):
 
 def claude_code_available():
     return shutil.which("claude") is not None
+
+
+def _git_changed_paths():
+    """Return unignored changed paths in the main repo, including untracked files."""
+    changed = set()
+    for args in (["diff", "--name-only"], ["diff", "--cached", "--name-only"]):
+        out, _, _ = _git(args, timeout=10, check=False)
+        for line in out.splitlines():
+            if line.strip():
+                changed.add(line.strip())
+    out, _, _ = _git(["ls-files", "--others", "--exclude-standard"], timeout=10, check=False)
+    for line in out.splitlines():
+        if line.strip():
+            changed.add(line.strip())
+    return sorted(changed)
+
+
+def _sanitize_commit_message(text):
+    msg = redact((text or "").strip())
+    msg = re.sub(r"\s+", " ", msg).strip()
+    if not msg:
+        msg = "chore: update LingTai Simple"
+    if len(msg) > 180:
+        msg = msg[:177].rstrip() + "..."
+    if _looks_like_secret(msg):
+        return None, "commit message 疑似包含 API key / token；请删除凭证后再提交。"
+    return msg, None
+
+
+def prepare_cc_commit_approval(state, payload):
+    """Queue a confirmation-gated real local git commit (L3). No push/PR/merge."""
+    if not _git_available():
+        return None, "当前目录不是 git 仓库，无法创建真实 commit。"
+    desc = (payload.get("description") or "").strip()
+    message_source = payload.get("commit_message") or desc or "chore: update LingTai Simple"
+    message, err = _sanitize_commit_message(message_source)
+    if err:
+        return None, err
+    changed = _git_changed_paths()
+    if not changed:
+        return None, "当前仓库没有未提交改动；无需创建 commit。"
+    if len(changed) > 120:
+        return None, f"改动文件过多（{len(changed)} 个）；为避免误提交，请先缩小范围或人工检查。"
+    secret_hits = _high_confidence_secret_hits(BASE_DIR, changed)
+    if secret_hits:
+        return None, "高置信秘密扫描发现疑似凭证，已拒绝进入 commit 确认队列：" + json.dumps(secret_hits, ensure_ascii=False)
+    compile_check = _run_py_compile_check(BASE_DIR)
+    if not compile_check.get("ok"):
+        return None, "py_compile 未通过，拒绝进入 commit 确认队列：" + compile_check.get("output", "")
+    stat, _, _ = _git(["diff", "--stat"], timeout=10, check=False)
+    cached_stat, _, _ = _git(["diff", "--cached", "--stat"], timeout=10, check=False)
+    detail = "\n".join([
+        f"commit message：{message}",
+        f"author：{COMMIT_AUTHOR_NAME} <{COMMIT_AUTHOR_EMAIL}>",
+        f"changed files（{len(changed)}）：" + ", ".join(changed[:40]) + (" ..." if len(changed) > 40 else ""),
+        "验证：py_compile OK；高置信秘密扫描 OK。",
+        "边界：确认后只创建本地 git commit；不会 push、不会开 PR、不会 merge，也不能撤销已发生的外部副作用。",
+        "diff stat：",
+        (stat or cached_stat or "（无 stat；可能只有未跟踪文件）")[:1800],
+    ])
+    ap = add_approval(state, {
+        "action": "code_commit",
+        "title": "Claude Code 苦力：允许 commit（真实本地提交）",
+        "detail": detail,
+        "preview": f"[git commit 预览 / 确认后真实提交]\n{detail}",
+        "commit_message": message,
+        "commit_changed_files": changed,
+    })
+    log_event(state, f"真实 commit 已进入确认队列：{message}", kind="git")
+    return {"queued_approval": ap["id"], "level": 3, "real_executor": True, "changed_files": changed, "commit_message": message}, None
+
+
+def git_commit_apply_real(state, ap):
+    """Create a real local git commit after explicit approval. Does not push/PR/merge."""
+    if not _git_available():
+        return None, "当前目录不是 git 仓库，无法创建 commit。"
+    message, err = _sanitize_commit_message(ap.get("commit_message") or ap.get("title"))
+    if err:
+        return None, err
+    approved_paths = sorted(str(x) for x in ap.get("commit_changed_files", []) if str(x).strip())
+    if not approved_paths:
+        return None, "确认项缺少已审阅文件清单；为避免误提交，已拒绝 commit。请重新发起 L3 commit 请求。"
+    changed = _git_changed_paths()
+    if not changed:
+        return None, "确认时仓库已无未提交改动；commit 已取消。"
+    if changed != approved_paths:
+        return None, "确认时工作区改动与预览时不一致；为避免误提交，已拒绝 commit。请重新查看 diff 后再发起 L3 commit 请求。"
+    secret_hits = _high_confidence_secret_hits(BASE_DIR, changed)
+    if secret_hits:
+        return None, "确认时高置信秘密扫描发现疑似凭证，已拒绝 commit：" + json.dumps(secret_hits, ensure_ascii=False)
+    compile_check = _run_py_compile_check(BASE_DIR)
+    if not compile_check.get("ok"):
+        return None, "确认时 py_compile 未通过，已拒绝 commit：" + compile_check.get("output", "")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    head, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
+    safety_ref = f"{SAFETY_REF_PREFIX}/pre-commit-{ts}-{uuid.uuid4().hex[:6]}"
+    _git(["update-ref", safety_ref, head], timeout=10)
+    try:
+        _git(["add", "--", *approved_paths], timeout=30)
+        env = {
+            "GIT_AUTHOR_NAME": COMMIT_AUTHOR_NAME,
+            "GIT_AUTHOR_EMAIL": COMMIT_AUTHOR_EMAIL,
+            "GIT_COMMITTER_NAME": COMMIT_AUTHOR_NAME,
+            "GIT_COMMITTER_EMAIL": COMMIT_AUTHOR_EMAIL,
+        }
+        _git(["commit", "-m", message], timeout=60, extra_env=env)
+        commit, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
+        stat, _, _ = _git(["show", "--stat", "--oneline", "--no-renames", "--format=%h %s", commit], timeout=20, check=False)
+    except Exception as e:
+        _git(["reset", "--", *approved_paths], timeout=20, check=False)
+        return None, f"git commit 失败，已保留工作区改动并取消暂存：{e}"
+    result = {
+        "commit": commit,
+        "commit_short": commit[:7],
+        "message": message,
+        "author": f"{COMMIT_AUTHOR_NAME} <{COMMIT_AUTHOR_EMAIL}>",
+        "changed_files": changed,
+        "safety_ref": safety_ref,
+        "stat": _bounded(stat, 3000),
+        "boundary": "local git commit only; no push, no PR, no merge",
+    }
+    ap["commit_safety_ref"] = safety_ref
+    log_event(state, f"真实本地 commit 已创建：{commit[:7]} {message}", kind="git")
+    return result, None
 
 
 def prepare_cc_readonly_run(state, payload):
@@ -1661,7 +1804,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.7 真实接入 L1 只读分析与 L2 本地改码；L3+ 仍进入确认队列。"""
+    """Claude Code 苦力卡：v0.8 真实接入 L1/L2/L3；L4+ 仍进入确认队列但不执行。"""
     level = parse_level(payload.get("level"), 1)
     desc = (payload.get("description") or "").strip() or "（无描述）"
     meta = next((l for l in CC_PERMISSION_LEVELS if l["level"] == level), CC_PERMISSION_LEVELS[0])
@@ -1669,13 +1812,15 @@ def request_cc_task(state, payload):
         return None, "Claude Code L1 只读分析已是真实外部调用；请通过专用处理器并勾选费用确认。"
     if level == 2:
         return None, "Claude Code L2 本地改码已是真实外部调用并会修改本仓库文件；请通过专用处理器并勾选费用/本地改动确认。"
-    action_map = {3: "code_commit", 4: "code_pr", 5: "code_merge"}
-    action = action_map.get(level, "code_commit")
+    if level == 3:
+        return prepare_cc_commit_approval(state, payload)
+    action_map = {4: "code_pr", 5: "code_merge"}
+    action = action_map.get(level, "code_pr")
     ap = add_approval(state, {
         "action": action,
         "title": f"Claude Code 苦力：{meta['label']}（执行器未接入）",
-        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.7 已真实接入 L1 只读分析与 L2 本地改码；commit/PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已提交或开 PR。",
-        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前 L1/L2 可真实调用 Claude Code；L3+ 等后续接入 commit、GitHub PR 与 merge 确认闸。",
+        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.8 已真实接入 L1 只读分析、L2 本地改码与 L3 本地 commit；PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已开 PR 或 merge。",
+        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前 L1/L2/L3 可真实执行；L4+ 等后续接入 GitHub PR 与 merge 确认闸。",
     })
     return {"queued_approval": ap["id"], "level": level, "real_executor": False}, None
 
@@ -1687,10 +1832,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.7（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.8（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.7 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.8 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -1710,7 +1855,7 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.7",
+        "version": "v0.8",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -1721,8 +1866,9 @@ def health_check():
             "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
             "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
             "real Claude Code L1 read-only analysis worker (explicit cost confirmation required)",
-            "real Claude Code L2 local-edit worker: isolated worktree, validation, patch apply to this repo; no commit/PR/merge",
-            "not connected yet: autonomous standalone WeChat poller, Claude Code commit/PR/merge",
+            "real Claude Code L2 local-edit worker: isolated worktree, validation, patch apply to this repo",
+            "real Claude Code L3 commit executor: confirmation-gated local git commit only; no push/PR/merge",
+            "not connected yet: autonomous standalone WeChat poller, Claude Code PR/merge",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1869,7 +2015,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "state": self._public_state(state)})
 
     def _handle_cc_request(self, payload):
-        """真实 Claude Code worker：L1 只读分析；L2 本地改码；L3+ 仍只进确认队列。"""
+        """真实 Claude Code worker：L1 只读分析；L2 本地改码；L3 本地 commit；L4/L5 仍只进确认队列。"""
         level = parse_level(payload.get("level"), 1)
         if level not in (1, 2):
             with _LOCK:
@@ -1968,18 +2114,23 @@ class Handler(BaseHTTPRequestHandler):
 # --------------------------------------------------------------------------
 
 def ensure_example_state():
-    """写出 state.example.json（示例数据，供参考）。"""
+    """写出 state.example.json（示例数据，供参考）。
+
+    示例文件是 tracked 文档资产，不能每次启动都因动态时间戳变脏，
+    否则 L3 commit 预览会把运行服务产生的无关改动纳入候选。
+    """
     example = default_state()
+    example["meta"]["created_at"] = DEMO_TIMESTAMP
     a1 = {
         "id": "agent_demo0001", "name": "营养审稿灵", "role": "长期助手",
         "provider_id": "deepseek", "model": "deepseek-chat", "cc_level": 1,
-        "status": "待命", "created_at": now_iso(), "recent_tasks": [], "context_base": 18,
+        "status": "待命", "created_at": DEMO_TIMESTAMP, "recent_tasks": [], "context_base": 18,
     }
     a1["context_pressure"] = estimate_context_pressure(a1)
     a2 = {
         "id": "agent_demo0002", "name": "代码管家灵", "role": "代码苦力",
         "provider_id": "openai", "model": "gpt-4o", "cc_level": 2,
-        "status": "正在干", "created_at": now_iso(),
+        "status": "正在干", "created_at": DEMO_TIMESTAMP,
         "recent_tasks": ["task_demoaaaa"], "context_base": 30,
     }
     a2["context_pressure"] = estimate_context_pressure(a2)
@@ -1988,17 +2139,24 @@ def ensure_example_state():
         "provider_id": "deepseek", "name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
         "tags": ["chat", "code", "cheap"], "configured": True, "in_keychain": True,
-        "key_label": "圆酱-DS", "key_last4": "1234", "updated_at": now_iso(),
+        "key_label": "圆酱-DS", "key_last4": "1234", "updated_at": DEMO_TIMESTAMP,
     }]
     example["wechat_inbox"] = [{
         "id": "wx_demo0001", "text": "让代码苦力看一下这个仓库，给我改个 README，但不要直接提交。",
-        "received_at": now_iso(), "ack": "已收到 ✅（mock）",
+        "received_at": DEMO_TIMESTAMP, "ack": "已收到 ✅（mock）",
         "stages": ["已收到", "排队中", "执行中", "等确认（敏感动作）"],
         "status": "等确认", "assignee": "代码管家灵",
         "result": "涉及改码，已进入确认队列。",
     }]
+    rendered = json.dumps(example, ensure_ascii=False, indent=2) + "\n"
+    try:
+        with open(EXAMPLE_STATE_PATH, "r", encoding="utf-8") as f:
+            if f.read() == rendered:
+                return
+    except OSError:
+        pass
     with open(EXAMPLE_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(example, f, ensure_ascii=False, indent=2)
+        f.write(rendered)
 
 
 def main():
@@ -2008,11 +2166,11 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.7 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.8 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
-    print("  边界 : localhost-only / Keychain + 模型 API + git Time Machine + 微信桥接 + Claude Code L1 只读分析为真实能力 / 改码-PR-merge 尚未接入")
+    print("  边界 : localhost-only / Keychain + 模型 API + git Time Machine + 微信桥接 + Claude Code L1/L2/L3 为真实能力 / PR-merge 尚未接入")
     print("  停止 : Ctrl+C")
     print("=" * 64)
     try:
