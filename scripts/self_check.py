@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.8 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.9 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -44,7 +44,7 @@ def main():
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.8', health
+        assert health['version']=='v0.9', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
@@ -111,7 +111,7 @@ def main():
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.8' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.9' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -133,9 +133,13 @@ def main():
         assert 'SELF_CHECK_L3_PROBE.tmp' in cc_l3['result'].get('changed_files', []), cc_l3
         st2=req('/api/state')
         assert 'cc_runs' in st2 and any(a['action']=='code_commit' for a in st2.get('approvals', [])), st2
+        # L4/L5 are real executors but self-check must not push or merge. In this dirty self-check
+        # context L4 should refuse before side effects; this still proves the route is guarded.
+        cc_l4=req('/api/cc/request', {'level':4,'description':'test: self-check PR should not push'})
+        assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.8 self-check passed')
+        print('OK LingTai Simple v0.9 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

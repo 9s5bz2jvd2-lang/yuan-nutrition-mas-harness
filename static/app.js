@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.8 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.9 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -431,7 +431,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.8 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.9 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -448,7 +448,7 @@ function openCCModal() {
   const opts = CATALOG.cc_levels.map(l =>
     `<option value="${l.level}">${l.level} · ${esc(l.label)}${l.needs_approval ? "（需确认）" : "（可直接）"}</option>`).join("");
   openModal("🛠️ Claude Code 苦力", `
-    <div class="preview">L1 会真实调用本机 Claude Code 只读分析（Read/Grep/Glob）；L2 会在隔离 git worktree 中真实本地改码，验证通过后把 patch 应用回本仓库；两者都可能产生费用且需勾选确认。L3 commit 已接入真实本地执行器；L4/L5 PR/merge 仍只进确认队列，尚未接入真实执行器。</div>
+    <div class="preview">L1 会真实调用本机 Claude Code 只读分析（Read/Grep/Glob）；L2 会在隔离 git worktree 中真实本地改码，验证通过后把 patch 应用回本仓库；两者都可能产生费用且需勾选确认。L3 commit 已接入真实本地执行器；L4 PR / L5 merge 已接入真实 GitHub 执行器；仍必须先进确认队列，批准后才会 push/create PR 或 merge。</div>
     <label>权限等级</label>
     <select id="cc-level">${opts}</select>
     <label>代码任务描述</label>
@@ -549,12 +549,12 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.8 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.9 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
       <li>点「新建一个灵」创建子灵；用「本地记录任务」「微信入口任务」体验编排。</li>
-      <li>敏感动作进入「确认队列」，先预览；rollback、Claude Code L1 只读分析、L2 本地改码已是真实链路；L3 commit 已接入；PR/merge 仍未接入。</li>
+      <li>敏感动作进入「确认队列」，先预览；rollback、Claude Code L1 只读分析、L2 本地改码已是真实链路；L3 commit 已接入；L4 PR / L5 merge 已真实接入确认闸。</li>
       <li>点「一键收功」生成可返回的阶段小结。</li>
     </ol>
     <div class="preview">Mac 双击启动：运行目录里的「启动圆酱灵台.command」。</div>

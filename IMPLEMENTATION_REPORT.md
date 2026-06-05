@@ -1,79 +1,88 @@
-# LingTai Simple v0.8 Implementation Report
+# LingTai Simple v0.9 Implementation Report
 
 ## Summary
 
-v0.8 adds a real **Claude Code L3 local git commit executor** on top of v0.7's real Keychain vault, model API test, git Time Machine / rollback, WeChat bridge endpoint, Claude Code L1 read-only analysis worker, and Claude Code L2 local-edit worker.
+v0.9 adds real confirmation-gated **GitHub PR and merge executors** on top of v0.8's Keychain vault, model API, git Time Machine / rollback, WeChat bridge endpoint, Claude Code L1 read-only analysis, L2 local edit, and L3 local commit executor.
 
-The new L3 path is intentionally narrow: it can create a local git commit after explicit confirmation, but it cannot push, open PRs, or merge. PR/merge remain confirmation-queue records until separate real executors are implemented.
+The new L4/L5 paths are intentionally bounded:
 
-## Changed files
+- L4 can push a reviewed local commit branch and create a real GitHub PR after explicit approval.
+- L5 can merge a specified real GitHub PR after explicit approval.
+- Neither path runs automatically when the request is created; both first enter the approval queue.
+- GitHub login must match `9s5bz2jvd2-lang` to avoid committing or merging with the wrong identity.
+
+## Files changed
 
 - `server.py`
-  - Version metadata updated to v0.8.
-  - Added commit author defaults for Wang Runyuan.
-  - Added `prepare_cc_commit_approval()` for L3 confirmation preview.
-  - Added `git_commit_apply_real()` for confirmation-gated local git commit.
-  - Added approved-file-list persistence in approval records.
-  - Updated health boundaries and Claude Code L4/L5 copy.
-- `static/index.html`, `static/app.js`
-  - Updated UI copy to v0.8 and clarified L3 local commit is real.
-  - PR/merge remain not real.
-- `scripts/self_check.py`
-  - Updated version assertions to v0.8.
-  - Tests L3 queues a real executor confirmation without approving it.
-- `data/state.example.json`
-  - Updated demo title to v0.8.
+  - Version metadata updated to v0.9.
+  - Added GitHub constants: expected login, optional GH config dir, PR body bound.
+  - Added safe `gh` helpers and `git push` via temporary `GIT_ASKPASS` calling `gh auth token` without printing the token.
+  - Added L4 helpers: `prepare_github_pr_approval()` and `github_pr_apply_real()`.
+  - Added L5 helpers: `prepare_github_merge_approval()` and `github_merge_apply_real()`.
+  - Approval records now preserve sanitized GitHub repo/base/head/PR metadata.
+  - `_apply_approved_action()` now dispatches `code_pr` and `code_merge` to real executors.
+  - Health boundaries now list L4/L5 as real confirmation-gated capabilities.
 - `README.md`
-  - Documents exact real/not-real boundaries.
+  - Rewritten for v0.9 with honest real/not-real boundaries.
+- `static/app.js`
+  - UI copy updated to say L4 PR and L5 merge are real confirmation-gated actions.
+- `scripts/self_check.py`
+  - Updated to v0.9 and checks that L4 refuses empty/no-ahead PR creation without side effects.
+- `data/state.example.json`
+  - Demo metadata updated to v0.9.
 
-## L3 commit safety design
+## L4 PR safety gates
 
-1. L3 does not call Claude Code or any external model.
-2. It inspects the current git worktree and queues a `code_commit` approval only when:
-   - git is available;
-   - there are uncommitted/untracked-unignored files;
-   - changed file count is not excessive;
-   - high-confidence secret scan passes;
-   - Python compile check passes.
-3. The approval stores:
-   - sanitized commit message;
-   - reviewed changed file list;
-   - preview text and diff stat;
-   - no secrets.
-4. On approval, the executor rechecks the current changed file list. If it differs from the preview-time list, commit is refused.
-5. It stages only the approved files using `git add -- <files>`, not `git add --all`.
-6. It creates `refs/lingtai-simple/safety/pre-commit-*` before committing.
-7. It commits with Wang Runyuan's GitHub noreply identity by default.
-8. It never pushes, opens PRs, merges, or claims to do so.
+Before queueing:
 
-## Validation
+1. Verify current directory is a git repo.
+2. Verify `gh` login and require `9s5bz2jvd2-lang`.
+3. Verify current GitHub repo slug.
+4. Require a clean worktree.
+5. Fetch and verify `origin/<base_branch>`.
+6. Require HEAD to be ahead of `origin/<base_branch>`.
+7. Sanitize PR title/body and reject secret-like text.
+8. Generate a safe branch name.
 
-Validated before release:
+On approval:
 
-```bash
-python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
-python3 scripts/self_check.py
-```
+1. Re-check `gh` login and repo slug.
+2. Re-check clean worktree.
+3. Re-check HEAD matches preview-time commit.
+4. Re-check branch/base safety.
+5. Refuse to overwrite an existing remote branch unless it already points at the same commit.
+6. Push with `GIT_ASKPASS` backed by `gh auth token` (token never printed).
+7. Run `gh pr create`.
 
-Result:
+## L5 merge safety gates
 
-```text
-OK LingTai Simple v0.8 self-check passed
-```
+Before queueing:
 
-The regular self-check does not burn external Claude Code tokens and does not approve a commit. It validates that L1/L2 reject without confirmation and that L3 exposes a real confirmation-gated local commit executor.
+1. Verify `gh` login and repo slug.
+2. Parse PR number or URL from request.
+3. Read PR via `gh pr view`.
+4. Require state `OPEN` and non-draft.
+5. Store base/head/method metadata in the approval.
 
-A destructive smoke test was run in an isolated `/tmp` copy of the repository: create a harmless README change, request L3, approve the queued approval, verify the resulting local commit author is Wang Runyuan, verify the committed file list is exactly the previewed file list, and verify no push/PR/merge happened.
+On approval:
 
-Result:
+1. Re-check `gh` login and repo slug.
+2. Re-read PR.
+3. Require state `OPEN` and non-draft.
+4. Refuse if base/head changed since preview.
+5. Run `gh pr merge <number> --merge --delete-branch` by default.
 
-```text
-OK destructive L3 local commit smoke passed
-```
+## Validation plan
 
-## Still not implemented
+- `python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py`
+- `python3 scripts/self_check.py`
+- High-confidence secret scan.
+- Isolated destructive smoke with a local temporary bare GitHub-like remote for branch push behavior.
+- Real GitHub creation/merge should be exercised only when an intentional PR target exists and the human expects that side effect.
 
-1. Real PR creation executor using 圆酱 GitHub identity and secret-safe token handling.
-2. Real merge executor with explicit WeChat/UI confirmation.
-3. Full LingTai runtime/mailbox/skills/memory integration.
-4. Independent always-on WeChat runner; current design still uses the existing LingTai WeChat MCP as bridge.
+## Boundaries
+
+- L4 creates PR only; it does not merge.
+- L5 merges only an explicitly specified PR.
+- Local rollback cannot undo remote GitHub side effects.
+- This prototype still relies on the existing LingTai WeChat MCP as the bridge; it does not start a second WeChat poller.
