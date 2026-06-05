@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.11 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.12 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -46,6 +46,8 @@ function statusTag(status) {
     "已暂停": "paused", "完成": "done", "已拒绝": "denied",
     "排队中": "busy", "执行中": "busy", "待确认": "waiting", "已确认": "done",
     "待派": "waiting", "已派发": "busy",
+    "queued_to_lingtai_outbox": "busy", "reply_received": "done",
+    "sleep_signal_written": "paused", "suspend_signal_written": "paused", "interrupt_signal_written": "waiting", "clear_signal_written": "waiting",
   };
   return `<span class="tag ${map[status] || "idle"}">${esc(status)}</span>`;
 }
@@ -164,13 +166,30 @@ function renderLingTaiRuntime() {
   if (!el) return;
   const rt = STATE.lingtai_runtime || {};
   const rows = STATE.lingtai_dispatches || [];
-  const banner = `<div class="preview">运行态：${esc(rt.status || "unknown")} · sender=${esc(rt.sender || "human")}<br>网络：${esc(rt.network_dir || "未找到")}<br>${esc(rt.note || "")}</div>`;
-  const dispatches = rows.length ? rows.map(d => `
+  const replies = STATE.lingtai_mail_results || [];
+  const life = STATE.lingtai_lifecycle_events || [];
+  const banner = `<div class="preview">运行态：${esc(rt.status || "unknown")} · sender=${esc(rt.sender || "human")} · reply_inbox=${esc(rt.reply_inbox || "mimo-2-5-pro")}<br>网络：${esc(rt.network_dir || "未找到")}<br>${esc(rt.note || "")}</div>
+    <div class="row-actions">
+      <button class="btn small ok" onclick="collectLingTaiReplies()">回收真实 agent 回复</button>
+      <button class="btn small warn" onclick="openLingTaiLifecycleModal()">生命周期动作</button>
+    </div>`;
+  const dispatches = rows.length ? `<h4>真实派发记录</h4>` + rows.map(d => `
     <div class="row">
       <div class="row-top"><span class="row-title">📮 ${esc(d.subject || d.mailbox_id)}</span>${statusTag(d.status || "queued_to_lingtai_outbox")}</div>
-      <div class="row-sub">${esc(d.from)} → ${esc(d.to)} · mailbox ${esc(d.mailbox_id)}<br>${esc(d.outbox_path || "")}</div>
+      <div class="row-sub">${esc(d.from)} → ${esc(d.to)} · mailbox ${esc(d.mailbox_id)}${d.last_reply_at ? " · reply " + esc(d.last_reply_at) : ""}<br>${esc(d.outbox_path || "")}</div>
     </div>`).join("") : `<div class="empty">还没有真实 LingTai 邮箱派发记录。</div>`;
-  el.innerHTML = banner + dispatches;
+  const replyHtml = replies.length ? `<h4>已回收真实回复</h4>` + replies.map(r => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">↩ ${esc(r.subject || r.mailbox_id)}</span>${statusTag("reply_received")}</div>
+      <div class="row-sub">from ${esc(r.from)} · ${esc(r.received_at || "")} · dispatch ${esc(r.dispatch_id || "")}</div>
+      <div class="preview">${esc(r.message_preview || "")}</div>
+    </div>`).join("") : "";
+  const lifeHtml = life.length ? `<h4>生命周期动作记录</h4>` + life.map(e => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">⚙ ${esc(e.action)} ${esc(e.address)}</span>${statusTag(e.status || "done")}</div>
+      <div class="row-sub">${esc(e.created_at || "")}</div>
+    </div>`).join("") : "";
+  el.innerHTML = banner + dispatches + replyHtml + lifeHtml;
 }
 
 function renderApprovals() {
@@ -496,7 +515,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.11 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.12 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -653,7 +672,7 @@ async function openLingTaiRuntimeModal(taskId = '', presetAddress = '') {
     `<option value="${esc(a.address)}" ${a.address === presetAddress ? "selected" : ""}>${esc(a.address)} · ${esc(a.agent_name || '')} · ${esc(a.state || '')}</option>`
   ).join("");
   openModal("📮 派到真实 LingTai agent（内部邮箱）", `
-    <div class="preview">v0.11 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
+    <div class="preview">v0.12 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
     <label>选择本地任务</label>
     <select id="lt-task"><option value="">（手写任务，不绑定本地任务）</option>${taskOptions}</select>
     <label>真实 LingTai agent 地址</label>
@@ -680,6 +699,43 @@ async function submitLingTaiDispatch() {
   else toast(r.error || '真实派发失败');
 }
 
+async function collectLingTaiReplies() {
+  const r = await api('/api/lingtai/collect', {});
+  if (r.ok) { toast(`已回收 ${r.result.collected || 0} 条真实回复`); render(); }
+  else toast(r.error || '回收失败');
+}
+
+async function openLingTaiLifecycleModal() {
+  let data = { agents: [] };
+  try { const res = await fetch('/api/lingtai/agents'); data = await res.json(); } catch (_) {}
+  const agentOptions = (data.agents || []).map(a =>
+    `<option value="${esc(a.address)}">${esc(a.address)} · ${esc(a.agent_name || '')} · ${a.alive ? 'alive' : 'not live'} · ${esc(a.state || '')}</option>`
+  ).join('');
+  openModal('⚙ 真实 LingTai 生命周期动作', `
+    <div class="preview">这些会作用于真实 LingTai agent。lull/suspend/interrupt/clear 会写入对应 signal 文件；cpr 会尝试用 lingtai-agent run 重启。所有动作先进入确认队列；不提供文件删除或 nirvana。</div>
+    <label>真实 LingTai agent</label>
+    <select id="lt-life-address"><option value="">请选择</option>${agentOptions}</select>
+    <label>动作</label>
+    <select id="lt-life-action">
+      <option value="lull">lull：入睡（仍可被邮件唤醒）</option>
+      <option value="suspend">suspend：挂起/停止进程</option>
+      <option value="interrupt">interrupt：中断当前轮</option>
+      <option value="clear">clear：强制凝蜕/清上下文</option>
+      <option value="cpr">cpr：复苏已停 agent</option>
+    </select>
+    <button class="btn warn" onclick="requestLingTaiLifecycle()">加入确认队列</button>
+  `);
+}
+
+async function requestLingTaiLifecycle() {
+  const r = await api('/api/lingtai/lifecycle/request', {
+    address: document.getElementById('lt-life-address').value,
+    action: document.getElementById('lt-life-action').value,
+  });
+  if (r.ok) { toast('已加入确认队列'); closeModal(); render(); }
+  else toast(r.error || '加入确认队列失败');
+}
+
 async function loadDemoState() {
   if (!confirm("加载示例状态会覆盖当前原型数据，继续？")) return;
   const r = await api("/api/demo/load", {});
@@ -701,7 +757,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.11 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.12 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>

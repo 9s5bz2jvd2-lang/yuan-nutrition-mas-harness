@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>圆酱专属轻量版灵台 · LingTai Simple v0.11</title>
+  <title>圆酱专属轻量版灵台 · LingTai Simple v0.12</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <span class="logo">灵</span>
       <div class="brand-text">
         <h1>圆酱专属轻量版灵台</h1>
-        <p>LingTai Simple v0.11 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
+        <p>LingTai Simple v0.12 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
       </div>
     </div>
     <div class="badges">
@@ -26,8 +26,8 @@
 
   <section class="quickstart card mini-card">
     <div>
-      <h2>✨ v0.11 快速体验</h2>
-      <p class="hint">真实能力里程碑：模型 / API 中心可存 Keychain 并发起真实模型调用；时间机器可创建 git 快照并在确认后真实 rollback；微信入口可由当前 LingTai WeChat MCP 桥接；Claude Code L1 只读分析已真实接入。改码 / L3 本地 commit / L4 GitHub PR / L5 merge 已真实接入确认闸；v0.11 新增真实 LingTai 内部邮箱派发。</p>
+      <h2>✨ v0.12 快速体验</h2>
+      <p class="hint">真实能力里程碑：模型 / API 中心可存 Keychain 并发起真实模型调用；时间机器可创建 git 快照并在确认后真实 rollback；微信入口可由当前 LingTai WeChat MCP 桥接；Claude Code L1 只读分析已真实接入。改码 / L3 本地 commit / L4 GitHub PR / L5 merge 已真实接入确认闸；v0.12 新增真实 agent 回复回收和生命周期确认闸。</p>
     </div>
     <div class="quick-actions">
       <button class="btn primary" data-act="load-demo">加载示例状态</button>
@@ -56,7 +56,7 @@
     <button class="bigbtn" data-act="wechat" title="已接入真实桥接端点：当前 LingTai WeChat MCP 作为唯一收发桥">
       <span class="bb-icon">💬</span><span class="bb-label">微信入口（桥接真实）</span>
     </button>
-    <button class="bigbtn" data-act="lingtai-runtime" title="v0.11 真实接入：写入 LingTai 内部邮箱 outbox，由 kernel 投递给真实 agent">
+    <button class="bigbtn" data-act="lingtai-runtime" title="v0.12 真实接入：写入 LingTai 内部邮箱 outbox，回收真实回复，并通过确认闸执行生命周期动作">
       <span class="bb-icon">📮</span><span class="bb-label">真实 LingTai 派发</span>
     </button>
     <button class="bigbtn" data-act="models">
@@ -94,7 +94,7 @@
     <!-- 微信入口 -->
     <section class="card">
       <h2>💬 微信入口（真实桥接端点）</h2>
-      <p class="hint">v0.11 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
+      <p class="hint">v0.12 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
       <div class="inline-form">
         <input id="wx-input" type="text" placeholder="本地测试一条微信桥接任务" />
         <button class="btn" id="wx-send">写入桥接队列</button>
@@ -105,7 +105,7 @@
     <!-- 真实 LingTai runtime / mailbox -->
     <section class="card">
       <h2>📮 真实 LingTai 派发（内部邮箱）</h2>
-      <p class="hint">v0.11 起，Simple 可把本地任务写入真实 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 LingTai kernel 投递给真实 agent。此动作不是 mock，会占用真实 agent；执行前需勾选确认。</p>
+      <p class="hint">v0.12 起，Simple 可把本地任务写入真实 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，再从 reply inbox 只读回收真实 agent 回复；生命周期动作也可进入确认队列，批准后写真实 signal / CPR。派发与生命周期动作都不是 mock，会影响真实 agent。</p>
       <button class="btn" data-act="lingtai-runtime">选择任务并真实派发</button>
       <div id="lingtai-runtime" class="list"></div>
     </section>

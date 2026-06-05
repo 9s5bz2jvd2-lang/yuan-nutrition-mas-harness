@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.11",
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.12",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
     "created_at": "2026-06-05T08:00:00-07:00",
@@ -85,12 +85,15 @@
   "soul_flows": [],
   "lingtai_runtime": {
     "mode": "internal_mailbox_bridge",
-    "status": "ready",
-    "network_dir": "/var/folders/g1/jbj1s_4x7wn1f67ffjt2_thm0000gn/T/lingtai-simple-selfcheck-network.ezie1khi",
+    "status": "demo",
+    "network_dir": "/path/to/.lingtai",
     "sender": "human",
-    "note": "v0.11 起可把 Simple 任务真实写入 LingTai 内部邮箱 outbox，由 kernel mailman 投递给真实 agent。"
+    "reply_inbox": "mimo-2-5-pro",
+    "note": "v0.12 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
   },
   "lingtai_dispatches": [],
+  "lingtai_mail_results": [],
+  "lingtai_lifecycle_events": [],
   "snapshots": [],
   "log": []
 }
