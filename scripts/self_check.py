@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.10 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.11 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
 - Keychain 仅用「假 key」在隔离的 service 名下测试；测完即删。
 - 无论 Keychain 写入成功还是被系统拒绝，都必须验证「假 key 没有落到 state.json」。
 """
-import json, os, pathlib, shutil, subprocess, sys, time, urllib.request, urllib.error
+import json, os, pathlib, shutil, subprocess, sys, time, tempfile, urllib.request, urllib.error
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = int(os.environ.get('LINGTAI_SIMPLE_TEST_PORT', '8799'))
 BASE = f'http://127.0.0.1:{PORT}'
 # 隔离的 Keychain service，避免污染真实配置；FAKE_KEY 永不是真实凭证。
 KC_SERVICE = 'lingtai-simple-selfcheck'
-FAKE_KEY = 'sk-FAKE-selfcheck-NOT-A-REAL-KEY-0000'
+FAKE_KEY = 'FAKE_SELF_CHECK_KEY_NOT_REAL_0000'
 
 def req(path, payload=None):
     data = None if payload is None else json.dumps(payload).encode('utf-8')
@@ -35,8 +35,17 @@ def main():
     state = ROOT/'data'/'state.json'
     if state.exists(): state.unlink()
     have_security = shutil.which('security') is not None
+    fake_network = pathlib.Path(tempfile.mkdtemp(prefix='lingtai-simple-selfcheck-network.'))
+    (fake_network/'human'/'mailbox'/'outbox').mkdir(parents=True, exist_ok=True)
+    (fake_network/'worker-one').mkdir(parents=True, exist_ok=True)
+    (fake_network/'worker-one'/'.agent.json').write_text(json.dumps({
+        'address':'worker-one', 'agent_name':'Selfcheck Worker', 'state':'idle',
+        'llm': {'provider':'selfcheck', 'model':'fake'}
+    }, ensure_ascii=False), encoding='utf-8')
     env = {**os.environ, 'LINGTAI_SIMPLE_PORT': str(PORT),
-           'LINGTAI_SIMPLE_KEYCHAIN_SERVICE': KC_SERVICE}
+           'LINGTAI_SIMPLE_KEYCHAIN_SERVICE': KC_SERVICE,
+           'LINGTAI_SIMPLE_NETWORK_DIR': str(fake_network),
+           'LINGTAI_SIMPLE_MAIL_SENDER': 'human'}
     proc = subprocess.Popen([sys.executable, 'server.py'], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     created_refs = []
@@ -44,7 +53,7 @@ def main():
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.10', health
+        assert health['version']=='v0.11', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
@@ -95,6 +104,21 @@ def main():
         aid=a['result']['id']
         low=req('/api/task/assign', {'agent_id':aid,'description':'只读整理','risk':'low'}); assert low['result']['status']=='完成'
         hi=req('/api/task/assign', {'agent_id':aid,'description':'merge PR','risk':'sensitive'}); assert hi['result']['status']=='等确认'
+
+        # ---- v0.11 真实 LingTai 内部邮箱派发：在隔离 fake .lingtai 网络中写 outbox，不碰真实邮箱 ----
+        discovered=req('/api/lingtai/agents')
+        assert discovered['agents'] and discovered['agents'][0]['address']=='worker-one', discovered
+        no_confirm=req('/api/lingtai/dispatch', {'task_id':low['result']['id'], 'address':'worker-one'})
+        assert not no_confirm['ok'] and 'confirm_dispatch' in (no_confirm.get('error') or ''), no_confirm
+        disp=req('/api/lingtai/dispatch', {'task_id':low['result']['id'], 'address':'worker-one', 'confirm_dispatch': True})
+        assert disp['ok'] and disp['result']['to']=='worker-one' and disp['result']['from']=='human', disp
+        outbox_path=pathlib.Path(disp['result']['outbox_path'])/'message.json'
+        assert outbox_path.exists(), disp
+        msg=json.loads(outbox_path.read_text(encoding='utf-8'))
+        assert msg['to']==['worker-one'] and msg['from']=='human' and '只读整理' in msg['message'], msg
+        st_mail=req('/api/state')
+        assert st_mail.get('lingtai_dispatches') and st_mail['tasks'][0]['status'] in ('已派发','等确认','完成'), st_mail
+
         demo=req('/api/demo/load', {}); assert demo['ok'] and demo['result']['agents'] >= 1
         sg=req('/api/shougong', {}); assert pathlib.Path(sg['result']['path']).exists()
 
@@ -111,7 +135,7 @@ def main():
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.10' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.11' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -120,7 +144,7 @@ def main():
         st=req('/api/state')
         assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
 
-        # ---- v0.10 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
+        # ---- v0.11 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
         orch=req('/api/agent/orchestrate', {'objective':'自检：把专属轻量版灵台拆给多个子灵', 'source':'self_check'})
         assert orch['ok'] and orch['result']['task_ids'] and orch['result']['insight_id'], orch
         st_orch=req('/api/state')
@@ -155,12 +179,13 @@ def main():
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.10 self-check passed')
+        print('OK LingTai Simple v0.11 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
         except subprocess.TimeoutExpired: proc.kill()
         if state.exists(): state.unlink()
+        shutil.rmtree(fake_network, ignore_errors=True)
         probe = ROOT/'SELF_CHECK_L3_PROBE.tmp'
         if probe.exists(): probe.unlink()
         for ref in created_refs:

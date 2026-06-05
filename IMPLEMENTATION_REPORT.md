@@ -1,35 +1,33 @@
-# LingTai Simple v0.10 Implementation Report
+# LingTai Simple v0.11 Implementation Report
 
 ## Summary
 
-v0.10 responds to 圆酱's correction that a “专属轻量版灵台” must include the LingTai-flavored core, not only code execution buttons. This release adds real local state capabilities for:
+v0.11 continues the “真实验收模式” work after v0.10. The key change is that LingTai Simple is no longer only local state for child-spirit orchestration: it now has a real bridge into the LingTai network through the documented internal mailbox outbox contract.
 
-1. multi-agent / child-spirit orchestration,
-2. insight generation,
-3. soul-flow reflection.
-
-These are local deterministic/stateful capabilities: they create records, tasks, batches, insights, and soul-flow entries; they do not pretend that a full LingTai runtime or external LLM execution has already happened.
+A Simple task can be dispatched to a real agent address under the surrounding `.lingtai/` network. The server writes a real `message.json` to `<sender>/mailbox/outbox/<uuid>/`; LingTai kernel mailman then claims and delivers it to the recipient inbox.
 
 ## Changed files
 
 - `server.py`
-  - Adds `orchestrations`, `insights`, and `soul_flows` durable state fields.
-  - Adds `orchestrate_multi_agent()` to create/select child spirits, split an objective into tasks, create an orchestration batch, and generate a linked insight.
-  - Adds `generate_insights()` to analyze local tasks, approvals, blocked work, sensitive actions, and context pressure.
-  - Adds `generate_soul_flow()` to produce a stage reflection / continuation entry.
-  - Adds API routes: `/api/agent/orchestrate`, `/api/insight/generate`, `/api/soul/flow`.
-  - Adds WeChat bridge commands: `多agent <目标>`, `洞察 [焦点]`, `心流 [触发原因]`.
+  - Bumps visible runtime strings to v0.11.
+  - Adds `LINGTAI_SIMPLE_NETWORK_DIR` and `LINGTAI_SIMPLE_MAIL_SENDER` support.
+  - Adds runtime state fields: `lingtai_runtime`, `lingtai_dispatches`.
+  - Adds read-only discovery: `list_lingtai_agents()` / `GET /api/lingtai/agents`.
+  - Adds real dispatch: `dispatch_task_to_lingtai()` / `POST /api/lingtai/dispatch`.
+  - Adds safe outbox writer following wake-by-mailbox-drop schema.
 
 - `static/index.html`, `static/app.js`
-  - Adds large buttons and cards for multi-agent orchestration, insights, and soul flow.
-  - Adds modal forms, renderers, and API calls for the new capabilities.
+  - Adds “真实 LingTai 派发” large button, card, modal, dispatch history renderer.
+  - Agents may show/bind a real `lingtai_address`.
+  - Task rows can dispatch to a real LingTai agent.
 
 - `scripts/self_check.py`
-  - Updated to v0.10.
-  - Verifies API and WeChat-command paths for multi-agent, insight, and soul-flow records.
+  - Updated to v0.11.
+  - Creates an isolated fake `.lingtai` network in `/tmp`, starts the server with `LINGTAI_SIMPLE_NETWORK_DIR`, dispatches a task to `worker-one`, and verifies the real outbox `message.json` is written.
+  - Does not touch the live `.lingtai` mailbox during this test.
 
 - `README.md`, `IMPLEMENTATION_REPORT.md`
-  - Updated real/not-real boundaries.
+  - Documents the new real/not-real boundary.
 
 ## Validation
 
@@ -37,19 +35,20 @@ Run:
 
 ```bash
 python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
+node --check static/app.js
 python3 scripts/self_check.py
 ```
 
-Expected result:
+Observed result:
 
 ```text
-OK LingTai Simple v0.10 self-check passed
+OK LingTai Simple v0.11 self-check passed
 ```
 
 ## Boundaries
 
-- Multi-agent orchestration is real local orchestration and task state, not yet full independent LingTai avatar runtime.
-- Insight is deterministic local state analysis, not an external model call.
-- Soul flow is a lightweight LingTai Simple reflection record, not yet the full LingTai kernel soul capability.
-- WeChat still uses the current LingTai WeChat MCP as the single bridge; no second poller is started.
-- GitHub PR/merge/rollback/Claude Code actions remain confirmation-gated and cannot undo external side effects once performed.
+- v0.11 dispatch is a real internal-mailbox queue into LingTai. It is not a full avatar/runtime lifecycle manager yet.
+- Dispatch can wake/occupy a real agent, so UI/API requires `confirm_dispatch=true`.
+- The dispatched agent may still need to ask for confirmation before external side effects.
+- WeChat still uses the current LingTai WeChat MCP as the only real receive/send bridge; no standalone second poller is started.
+- External side effects such as PR/merge/messages cannot be rolled back by git Time Machine.
