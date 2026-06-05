@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.9 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.10 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.9 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析、L2 本地改码、L3 本地 commit，以及 L4/L5 GitHub PR/merge 执行闸。
+- v0.10 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1 只读分析、L2 本地改码、L3 本地 commit，以及 L4/L5 GitHub PR/merge 执行闸。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.9 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.10 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -430,7 +430,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.9",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.10",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -440,14 +440,17 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.8 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.10 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 运行记录（v0.8 真实接入 L1/L2；L3 是确认后本地 commit）
+        "cc_runs": [],          # Claude Code 运行记录（v0.10 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
+        "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
+        "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
         "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
@@ -479,10 +482,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.8 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.10 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.9"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.10"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -492,6 +495,9 @@ def normalize_state(state):
     state.setdefault("wechat_outbox", [])
     state.setdefault("wechat_bridge", base["wechat_bridge"])
     state.setdefault("cc_runs", [])
+    state.setdefault("orchestrations", [])
+    state.setdefault("insights", [])
+    state.setdefault("soul_flows", [])
     state.setdefault("snapshots", [])
     state.setdefault("log", [])
     return state
@@ -580,7 +586,7 @@ def assign_task(state, payload):
     agent["context_pressure"] = estimate_context_pressure(agent)
     log_event(state, f"派任务给 {agent['name']}：{desc[:40]}")
 
-    # mock execution：低风险直接“完成”，敏感任务进确认队列
+    # 本地编排执行：低风险记录为完成，敏感任务进确认队列
     if risk == "sensitive":
         ap = add_approval(state, {
             "action": payload.get("action_type") or "wechat_send",
@@ -594,10 +600,171 @@ def assign_task(state, payload):
         task["approval_id"] = ap["id"]
     else:
         task["status"] = "完成"
-        task["result"] = f"(mock) 已完成只读/本地处理：{desc[:60]}"
+        task["result"] = f"已完成本地编排记录：{desc[:60]}"
         agent["status"] = "待命"
-        log_event(state, f"{agent['name']} 完成任务（mock）")
+        log_event(state, f"{agent['name']} 完成本地编排记录")
     return task, None
+
+
+def _task_counts(state):
+    tasks = state.get("tasks", [])
+    return {
+        "total": len(tasks),
+        "active": len([t for t in tasks if t.get("status") in ("排队中", "执行中", "等确认")]),
+        "pending_confirm": len([t for t in tasks if t.get("status") == "等确认"]),
+        "blocked": len([t for t in tasks if t.get("status") in ("卡住", "失败")]),
+        "done": len([t for t in tasks if t.get("status") == "完成"]),
+    }
+
+
+def _agent_digest(agent):
+    return f"{agent.get('name','未命名')}（{agent.get('role','')}｜{agent.get('status','')}｜context {agent.get('context_pressure',0)}%）"
+
+
+def generate_insights(state, payload=None):
+    """生成“洞察”：基于当前本地状态的确定性分析，不调用外部模型、不烧钱。"""
+    payload = payload or {}
+    focus = (payload.get("focus") or "").strip()
+    agents = state.get("agents", [])
+    pending = [a for a in state.get("approvals", []) if a.get("status") == "待确认"]
+    active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
+    high_pressure = [a for a in agents if int(a.get("context_pressure") or 0) >= 70]
+    stalled = [t for t in state.get("tasks", []) if t.get("status") in ("卡住", "失败")]
+    recent_sensitive = [t for t in state.get("tasks", [])[:12] if t.get("risk") == "sensitive"]
+
+    findings = []
+    if not agents:
+        findings.append({"level": "high", "title": "还没有子灵", "evidence": "agents=0", "next_action": "先新建主控灵/洞察灵/执行灵，才能形成多 agent 编排。"})
+    if pending:
+        findings.append({"level": "high", "title": "有待确认动作", "evidence": f"pending_approvals={len(pending)}", "next_action": "先处理确认队列；PR/merge/rollback/外发类动作不要绕过确认闸。"})
+    if high_pressure:
+        findings.append({"level": "medium", "title": "有子灵 context 压力偏高", "evidence": "；".join(_agent_digest(a) for a in high_pressure[:3]), "next_action": "生成收功单或拆分任务，避免把一个子灵压成万能大模型。"})
+    if active:
+        findings.append({"level": "medium", "title": "仍有进行中/待处理任务", "evidence": f"active_tasks={len(active)}", "next_action": "让主控按子灵汇总：谁负责、当前状态、下一步是什么。"})
+    if stalled:
+        findings.append({"level": "high", "title": "存在卡住/失败任务", "evidence": "；".join(t.get("description", "")[:30] for t in stalled[:3]), "next_action": "只修最小失败层：日志→复现→补丁→自检，不整炉重炼。"})
+    if recent_sensitive:
+        findings.append({"level": "medium", "title": "近期有敏感动作", "evidence": f"sensitive_tasks={len(recent_sensitive)}", "next_action": "继续保持二次确认；GitHub/rollback/外发副作用要写清不可逆边界。"})
+    if focus:
+        findings.append({"level": "info", "title": "本次洞察焦点", "evidence": redact(focus[:160]), "next_action": "围绕这个焦点安排子灵：洞察灵看风险，执行灵做落地，审校灵查边界。"})
+    if not findings:
+        findings.append({"level": "info", "title": "当前炉火平稳", "evidence": "无待确认、无高压、无卡住任务", "next_action": "可以继续派下一个小任务，或生成心流做阶段回环。"})
+
+    insight = {
+        "id": new_id("insight"),
+        "created_at": now_iso(),
+        "focus": redact(focus),
+        "findings": findings[:8],
+        "summary": "；".join(f["title"] for f in findings[:4]),
+        "source": "local_state_rules",
+    }
+    state.setdefault("insights", []).insert(0, insight)
+    state["insights"] = state["insights"][:50]
+    log_event(state, f"生成洞察：{insight['summary'][:80]}", kind="insight")
+    return insight, None
+
+
+def generate_soul_flow(state, payload=None):
+    """生成“心流”：把任务、洞察、确认队列收束成可返回的阶段性自省。"""
+    payload = payload or {}
+    trigger = (payload.get("trigger") or "manual").strip() or "manual"
+    counts = _task_counts(state)
+    agents = state.get("agents", [])
+    latest_insight = (state.get("insights") or [None])[0]
+    pending = [a for a in state.get("approvals", []) if a.get("status") == "待确认"]
+    high = [a for a in agents if int(a.get("context_pressure") or 0) >= 70]
+
+    lines = [
+        "心流回环：我先把现场收成一个圆，再继续向外做。",
+        f"触发：{trigger}。当前有 {len(agents)} 个子灵、{counts['active']} 个进行中/待处理任务、{len(pending)} 个待确认动作。",
+    ]
+    if agents:
+        lines.append("子灵分工：" + "；".join(_agent_digest(a) for a in agents[:5]))
+    if latest_insight:
+        lines.append("最近洞察：" + latest_insight.get("summary", ""))
+    if pending:
+        lines.append("确认闸提醒：先处理确认队列，所有外部副作用都要二次确认。")
+    if high:
+        lines.append("护元提醒：有子灵上下文压力偏高，下一步应拆小或收功，不要继续堆大任务。")
+    if not pending and counts["active"] == 0:
+        lines.append("当前没有必须立刻处理的卡点，可以安排下一轮多 agent 小闭环。")
+    lines.append("续功入口：发“洞察”看风险；发“多agent <目标>”拆分子灵；发“收功”保存阶段成果。")
+
+    flow = {
+        "id": new_id("soul"),
+        "created_at": now_iso(),
+        "trigger": redact(trigger),
+        "text": "\n".join(lines),
+        "source": "local_state_reflection",
+        "task_counts": counts,
+    }
+    state.setdefault("soul_flows", []).insert(0, flow)
+    state["soul_flows"] = state["soul_flows"][:50]
+    log_event(state, f"生成心流：{trigger}", kind="soul")
+    return flow, None
+
+
+def orchestrate_multi_agent(state, payload):
+    """真实本地多 agent 编排：创建/选择子灵，拆任务，记录批次；不假装外部模型已执行。"""
+    objective = (payload.get("objective") or payload.get("description") or "").strip()
+    if not objective:
+        return None, "多 agent 目标不能为空"
+    source = payload.get("source") or "ui"
+    requested = payload.get("agent_ids") or []
+    selected = [find_agent(state, aid) for aid in requested]
+    selected = [a for a in selected if a]
+
+    if not selected:
+        templates = [
+            ("主控洞察灵", "洞察 / 风险 / 下一步"),
+            ("执行落地灵", "执行 / 文件 / 代码苦力"),
+            ("审校回环灵", "审校 / 边界 / 收功"),
+        ]
+        for name, role in templates:
+            if len(state.get("agents", [])) >= MAX_AGENTS:
+                break
+            existing = next((a for a in state.get("agents", []) if a.get("name") == name), None)
+            if existing:
+                selected.append(existing)
+            else:
+                a, err = create_agent(state, {"name": name, "role": role, "cc_level": 1})
+                if a:
+                    selected.append(a)
+        if not selected and state.get("agents"):
+            selected = state["agents"][:3]
+    if not selected:
+        return None, "无法创建或选择子灵"
+
+    step_templates = [
+        "洞察：先判断目标、风险、边界和需要确认的动作。",
+        "执行：把目标拆成可落地的小步骤，优先做能真实验证的一步。",
+        "审校：检查是否有 mock 冒充、凭证泄露、外部副作用和未说明边界。",
+        "回环：汇总结果、下一步和需要沉淀到 skill/knowledge/pad 的内容。",
+    ]
+    tasks = []
+    for i, agent in enumerate(selected):
+        desc = f"多 agent 编排｜目标：{objective}\n子任务：{step_templates[i % len(step_templates)]}"
+        risk = "sensitive" if any(k in objective for k in ("push", "PR", "merge", "提交", "合并", "删除", "回滚", "rollback")) else "low"
+        task, err = assign_task(state, {"agent_id": agent["id"], "description": desc, "source": source, "risk": risk, "action_type": "multi_agent_sensitive" if risk == "sensitive" else "multi_agent_task"})
+        if task:
+            tasks.append(task)
+    batch = {
+        "id": new_id("orch"),
+        "created_at": now_iso(),
+        "objective": redact(objective),
+        "source": source,
+        "agent_ids": [a["id"] for a in selected],
+        "agent_names": [a["name"] for a in selected],
+        "task_ids": [t["id"] for t in tasks],
+        "status": "等确认" if any(t.get("status") == "等确认" for t in tasks) else "已编排",
+        "summary": f"已把目标拆给 {len(selected)} 个子灵：" + "、".join(a["name"] for a in selected),
+    }
+    state.setdefault("orchestrations", []).insert(0, batch)
+    state["orchestrations"] = state["orchestrations"][:50]
+    insight, _ = generate_insights(state, {"focus": objective})
+    batch["insight_id"] = insight["id"]
+    log_event(state, f"多 agent 编排：{objective[:50]}", kind="multi_agent")
+    return batch, None
 
 
 def set_agent_status(state, agent_id, action):
@@ -615,7 +782,7 @@ def set_agent_status(state, agent_id, action):
         ap = add_approval(state, {
             "action": "delete_agent",
             "title": f"删除灵：{agent['name']}",
-            "detail": f"将删除灵 {agent['name']}（{agent['id']}）。删除不可自动撤回（mock）。",
+            "detail": f"将删除灵 {agent['name']}（{agent['id']}）。删除需确认且不可自动撤回。",
             "agent_id": agent_id,
         })
         return {"queued_approval": ap["id"]}, None
@@ -657,7 +824,7 @@ def build_preview(action, payload):
         "code_pr": f"[GitHub PR 预览 / 确认后会真实 push 分支并创建 PR]\n{detail}",
         "code_merge": f"[GitHub merge 预览 / 确认后会真实合并指定 PR]\n{detail}",
         "rollback_apply": f"[rollback 预览 / 确认后会真实 git reset --hard]\n{detail}",
-        "delete_agent": f"[删除灵预览 / mock]\n{detail}",
+        "delete_agent": f"[删除灵预览]\n{detail}",
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
     }
     return previews.get(action, f"[预览]\n{detail}")
@@ -751,7 +918,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.8 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
+                    t["result"] = f"已确认：{action}；当前 v0.10 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -901,7 +1068,7 @@ def wechat_submit(state, payload):
         "id": msg_id,
         "text": redact(text),
         "received_at": now_iso(),
-        "ack": "已收到 ✅（mock，不会真实回微信）",
+        "ack": "已收到 ✅（本地测试入口，不会直接发真实微信）",
         "stages": ["已收到", "排队中"],
         "status": "排队中",
         "assignee": target["name"] if target else "(待派给主控)",
@@ -911,7 +1078,7 @@ def wechat_submit(state, payload):
     log_event(state, f"微信任务进入队列：{text[:30]}", kind="wechat")
 
     if target:
-        # 真实派一个 task（仍是 mock execution）
+        # 本地派一个 task（真实落盘记录；不直接外发微信）
         task, err = assign_task(state, {
             "agent_id": target["id"],
             "description": text,
@@ -927,7 +1094,7 @@ def wechat_submit(state, payload):
         else:
             item["status"] = "完成"
             item["stages"].append("完成")
-            item["result"] = "(mock) 已处理，结果将原路回微信（此处不真实发送）。"
+            item["result"] = "已处理本地测试任务；真实微信外发由 WeChat MCP 桥接者原路发送。"
         if task:
             item["task_id"] = task["id"]
     else:
@@ -964,7 +1131,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.9 当前状态：",
+        "圆酱，LingTai Simple v0.10 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1050,6 +1217,33 @@ def wechat_bridge_incoming(state, payload):
         item["status"] = "完成" if not err else "卡住"
         item["stages"].append("拒绝队列处理完成" if not err else "拒绝失败")
         reply = f"已拒绝：{approval_id}" if not err else f"拒绝失败：{err}"
+    elif lower in ("洞察", "insight", "/insight", "看洞察") or lower.startswith(("洞察 ", "insight ")):
+        focus = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+        ins, err = generate_insights(state, {"focus": focus})
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("洞察已生成" if not err else "洞察失败")
+        if err:
+            reply = f"洞察失败：{err}"
+        else:
+            lines = [f"洞察 {ins['id']}：{ins.get('summary','')}"]
+            for f in ins.get("findings", [])[:5]:
+                lines.append(f"- [{f.get('level')}] {f.get('title')}｜证据：{f.get('evidence')}｜下一步：{f.get('next_action')}")
+            reply = "\n".join(lines)
+    elif lower in ("心流", "soul", "/soul", "心流一下") or lower.startswith(("心流 ", "soul ")):
+        trigger = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else "wechat"
+        flow, err = generate_soul_flow(state, {"trigger": trigger})
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("心流已生成" if not err else "心流失败")
+        reply = flow["text"] if not err else f"心流失败：{err}"
+    elif lower.startswith(("多agent ", "多 agent ", "multiagent ", "multi-agent ")):
+        objective = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+        batch, err = orchestrate_multi_agent(state, {"objective": objective, "source": "wechat_bridge"})
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("多 agent 编排已生成" if not err else "多 agent 编排失败")
+        if err:
+            reply = f"多 agent 编排失败：{err}"
+        else:
+            reply = f"{batch['summary']}\n批次：{batch['id']}\n任务：{', '.join(batch['task_ids'][:5])}\n我也同步生成了一条洞察：{batch.get('insight_id')}"
     elif lower.startswith(("快照", "snapshot")):
         label = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else "wechat-bridge"
         snap, err = create_snapshot(state, {"label": label})
@@ -1103,7 +1297,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.8 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.10 会真实记录/多 agent 编排/洞察/心流/确认；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -1133,7 +1327,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.8（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已真实接入；PR/merge 仍在接入中）")
+    lines.append("> 圆酱专属轻量版灵台 v0.10（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流已真实接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -1165,7 +1359,7 @@ def generate_shougong(state):
     lines.append("- 检查 context 压力高的灵，必要时收束 / 凝蜕。")
     lines.append("")
     lines.append("## 🚧 边界提醒")
-    lines.append("- 本原型不真实发送任何消息；Time Machine / rollback、Claude Code L2 本地改码与 L3 本地 commit 已真实接入，但只能作用于本仓库文件，不能撤回外部副作用；PR/merge 仍未接入。")
+    lines.append("- 本服务不直接持有微信凭证、不启动第二个 poller；真实微信外发由当前 LingTai WeChat MCP 桥接。Time Machine / rollback、Claude Code L2 本地改码、L3 commit、L4 PR、L5 merge 已真实接入，但只能按各自边界作用，不能撤回外部副作用。")
     lines.append("- API key 仅以「已配置 + 后四位」形式保存，界面不回显明文。")
     md = "\n".join(lines)
 
@@ -1679,7 +1873,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.9 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.10 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -2213,7 +2407,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.9 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.10 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -2234,10 +2428,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.9（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.10（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.8 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.10 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -2258,7 +2452,7 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.9",
+        "version": "v0.10",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -2273,6 +2467,8 @@ def health_check():
             "real Claude Code L3 commit executor: confirmation-gated local git commit only",
             "real Claude Code L4 PR executor: confirmation-gated branch push + GitHub PR creation",
             "real Claude Code L5 merge executor: confirmation-gated GitHub PR merge",
+            "real local multi-agent orchestration: create/select child spirits, split objective, record task batch",
+            "real local insight and soul-flow loops: deterministic state analysis, reflection records, WeChat commands",
             "not connected yet: autonomous standalone WeChat poller",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
@@ -2462,6 +2658,9 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "/api/agent/create": lambda s, p: create_agent(s, p),
             "/api/task/assign": lambda s, p: assign_task(s, p),
+            "/api/agent/orchestrate": lambda s, p: orchestrate_multi_agent(s, p),
+            "/api/insight/generate": lambda s, p: generate_insights(s, p),
+            "/api/soul/flow": lambda s, p: generate_soul_flow(s, p),
             "/api/agent/pause": lambda s, p: set_agent_status(s, p.get("agent_id"), "pause"),
             "/api/agent/resume": lambda s, p: set_agent_status(s, p.get("agent_id"), "resume"),
             "/api/agent/delete": lambda s, p: set_agent_status(s, p.get("agent_id"), "delete"),
@@ -2503,6 +2702,9 @@ class Handler(BaseHTTPRequestHandler):
             "wechat_outbox": state.get("wechat_outbox", [])[:30],
             "wechat_bridge": state.get("wechat_bridge", {}),
             "cc_runs": state.get("cc_runs", [])[:20],
+            "orchestrations": state.get("orchestrations", [])[:20],
+            "insights": state.get("insights", [])[:20],
+            "soul_flows": state.get("soul_flows", [])[:20],
             "snapshots": state["snapshots"],
             "log": state["log"][:40],
             "stats": {
@@ -2548,7 +2750,7 @@ def ensure_example_state():
     }]
     example["wechat_inbox"] = [{
         "id": "wx_demo0001", "text": "让代码苦力看一下这个仓库，给我改个 README，但不要直接提交。",
-        "received_at": DEMO_TIMESTAMP, "ack": "已收到 ✅（mock）",
+        "received_at": DEMO_TIMESTAMP, "ack": "已收到 ✅（示例）",
         "stages": ["已收到", "排队中", "执行中", "等确认（敏感动作）"],
         "status": "等确认", "assignee": "代码管家灵",
         "result": "涉及改码，已进入确认队列。",
@@ -2571,7 +2773,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.9 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.10 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

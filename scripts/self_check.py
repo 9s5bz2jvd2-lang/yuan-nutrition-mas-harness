@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.9 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.10 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -44,7 +44,7 @@ def main():
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.9', health
+        assert health['version']=='v0.10', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
@@ -111,7 +111,7 @@ def main():
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.9' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.10' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -119,6 +119,22 @@ def main():
         assert wx2['ok'] and '任务队列' in wx2['result']['reply_text'], wx2
         st=req('/api/state')
         assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
+
+        # ---- v0.10 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
+        orch=req('/api/agent/orchestrate', {'objective':'自检：把专属轻量版灵台拆给多个子灵', 'source':'self_check'})
+        assert orch['ok'] and orch['result']['task_ids'] and orch['result']['insight_id'], orch
+        st_orch=req('/api/state')
+        assert st_orch.get('orchestrations') and st_orch.get('insights'), st_orch
+        ins=req('/api/insight/generate', {'focus':'自检：检查风险和下一步'})
+        assert ins['ok'] and ins['result']['findings'], ins
+        soul=req('/api/soul/flow', {'trigger':'self_check'})
+        assert soul['ok'] and '心流回环' in soul['result']['text'], soul
+        wx_ins=req('/api/wechat/bridge/incoming', {'text':'洞察 多agent和心流是否可用','user_id':'wx_selfcheck','message_id':'msg_selfcheck_insight','sender':'圆酱'})
+        assert wx_ins['ok'] and '洞察' in wx_ins['result']['reply_text'], wx_ins
+        wx_soul=req('/api/wechat/bridge/incoming', {'text':'心流 自检','user_id':'wx_selfcheck','message_id':'msg_selfcheck_soul','sender':'圆酱'})
+        assert wx_soul['ok'] and '心流回环' in wx_soul['result']['reply_text'], wx_soul
+        wx_orch=req('/api/wechat/bridge/incoming', {'text':'多agent 做一个认真版本','user_id':'wx_selfcheck','message_id':'msg_selfcheck_orch','sender':'圆酱'})
+        assert wx_orch['ok'] and '批次' in wx_orch['result']['reply_text'], wx_orch
 
         # ---- Claude Code L1：已是真实外部调用，必须显式确认费用；自检默认不烧钱，只验证未确认时拒绝、L2 未确认时拒绝；L3 本地 commit 进入真实执行确认队列；L4+ 仍只进确认队列 ----
         cc_no=req('/api/cc/request', {'level':1,'description':'只读分析 README 结构'})
@@ -139,7 +155,7 @@ def main():
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.9 self-check passed')
+        print('OK LingTai Simple v0.10 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

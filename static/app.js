@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.9 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.10 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -72,6 +72,9 @@ function render() {
   renderProviders();
   renderCCLevels();
   renderCCRuns();
+  renderOrchestrations();
+  renderInsights();
+  renderSoulFlows();
   renderPressure();
   renderLog();
 }
@@ -216,6 +219,47 @@ function renderCCRuns() {
       </div>
       <div class="row-sub">run：${esc(r.id)} · 等级：${esc(r.label || r.level)}${r.duration_ms ? " · " + esc(r.duration_ms) + "ms" : ""}${r.report_path ? "<br>报告：" + esc(r.report_path) : ""}</div>
       ${r.output_preview ? `<div class="preview">${esc(r.output_preview)}</div>` : ""}
+    </div>`).join("");
+}
+
+function renderOrchestrations() {
+  const el = $("#orchestrations");
+  if (!el) return;
+  const rows = STATE.orchestrations || [];
+  if (!rows.length) { el.innerHTML = `<div class="empty">暂无多 agent 编排批次。</div>`; return; }
+  el.innerHTML = rows.map(o => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">${esc(o.objective || "多 agent 目标")}</span>${statusTag(o.status || "已编排")}</div>
+      <div class="row-sub">${esc(o.id)} · ${esc(o.created_at || "")}</div>
+      <div>${esc(o.summary || "")}</div>
+      <div class="row-sub">子灵：${esc((o.agent_names || []).join("、"))}</div>
+      <div class="row-sub">任务：${esc((o.task_ids || []).join(", "))}</div>
+    </div>`).join("");
+}
+
+function renderInsights() {
+  const el = $("#insights");
+  if (!el) return;
+  const rows = STATE.insights || [];
+  if (!rows.length) { el.innerHTML = `<div class="empty">暂无洞察。可点“生成洞察”，或微信发：洞察。</div>`; return; }
+  el.innerHTML = rows.map(ins => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">${esc(ins.summary || "洞察")}</span><span class="tag idle">${esc(ins.source || "local")}</span></div>
+      <div class="row-sub">${esc(ins.id)} · ${esc(ins.created_at || "")}</div>
+      ${(ins.findings || []).slice(0, 4).map(f => `<div class="mini-line">• <b>${esc(f.title || "")}</b>｜${esc(f.next_action || "")}</div>`).join("")}
+    </div>`).join("");
+}
+
+function renderSoulFlows() {
+  const el = $("#soul-flows");
+  if (!el) return;
+  const rows = STATE.soul_flows || [];
+  if (!rows.length) { el.innerHTML = `<div class="empty">暂无心流。可点“心流回环”，或微信发：心流。</div>`; return; }
+  el.innerHTML = rows.map(f => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">心流 · ${esc(f.trigger || "manual")}</span><span class="tag ok">回环</span></div>
+      <div class="row-sub">${esc(f.id)} · ${esc(f.created_at || "")}</div>
+      <div class="preview">${esc(f.text || "")}</div>
     </div>`).join("");
 }
 
@@ -431,7 +475,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.9 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.10 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -468,6 +512,52 @@ async function submitCC() {
     else toast(r.result.status === "完成" ? "Claude Code 运行已完成" : "Claude Code 请求已处理");
     closeModal(); render();
   } else toast(r.error || "失败");
+}
+
+function openMultiAgentModal() {
+  const opts = (STATE.agents || []).map(a => `<label class="checkline"><input type="checkbox" class="orch-agent" value="${a.id}" /> ${esc(a.name)}｜${esc(a.role)}</label>`).join("") || `<div class="muted">不选也可以：系统会自动创建主控洞察灵、执行落地灵、审校回环灵。</div>`;
+  openModal("多 agent / 子灵编排", `
+    <p class="hint">真实本地编排：创建或选择多个子灵，把一个目标拆成洞察、执行、审校、回环任务，并记录批次。</p>
+    <textarea id="orch-objective" placeholder="例：把 LingTai Simple 做成圆酱专属轻量版灵台，先补多 agent / 洞察 / 心流"></textarea>
+    <div class="form-label">选择参与子灵（可不选，自动创建/选择）</div>
+    <div class="checks">${opts}</div>
+    <button class="btn primary" onclick="submitMultiAgent()">生成多 agent 编排</button>
+  `);
+}
+
+async function submitMultiAgent() {
+  const agent_ids = $$(".orch-agent:checked").map(x => x.value);
+  const r = await api("/api/agent/orchestrate", { objective: $("#orch-objective").value, agent_ids });
+  if (!r.ok) return toast(r.error || "编排失败");
+  STATE = r.state; render(); closeModal(); toast("已生成多 agent 编排");
+}
+
+function openInsightModal() {
+  openModal("生成洞察", `
+    <p class="hint">洞察会读取本地状态：子灵、任务、确认队列、卡点、context 压力；不调用外部模型。</p>
+    <textarea id="insight-focus" placeholder="可选焦点：例如，检查专属轻量版灵台还缺什么"></textarea>
+    <button class="btn primary" onclick="submitInsight()">生成洞察</button>
+  `);
+}
+
+async function submitInsight() {
+  const r = await api("/api/insight/generate", { focus: $("#insight-focus").value });
+  if (!r.ok) return toast(r.error || "洞察失败");
+  STATE = r.state; render(); closeModal(); toast("洞察已生成");
+}
+
+function openSoulModal() {
+  openModal("心流回环", `
+    <p class="hint">心流会把当前任务、洞察、确认队列和上下文压力收束成阶段性自省与续功入口。</p>
+    <input id="soul-trigger" placeholder="触发原因，例如：圆酱要求认真做专属轻量版灵台" />
+    <button class="btn primary" onclick="submitSoul()">生成心流</button>
+  `);
+}
+
+async function submitSoul() {
+  const r = await api("/api/soul/flow", { trigger: $("#soul-trigger").value || "manual" });
+  if (!r.ok) return toast(r.error || "心流失败");
+  STATE = r.state; render(); closeModal(); toast("心流已生成");
 }
 
 function openApprovalsModal() {
@@ -549,7 +639,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.9 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.10 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
@@ -565,6 +655,9 @@ function openDocsModal() {
 const ACTIONS = {
   "new-agent": openNewAgentModal,
   "assign-task": () => openTaskModal(),
+  "multi-agent": openMultiAgentModal,
+  "insight": openInsightModal,
+  "soul": openSoulModal,
   "wechat": openWechatModal,
   "models": openModelsModal,
   "cc": openCCModal,
@@ -613,6 +706,9 @@ window.approval = approval;
 window.quickAssign = quickAssign;
 window.submitNewAgent = submitNewAgent;
 window.submitTask = submitTask;
+window.submitMultiAgent = submitMultiAgent;
+window.submitInsight = submitInsight;
+window.submitSoul = submitSoul;
 window.submitProvider = submitProvider;
 window.checkProviderKey = checkProviderKey;
 window.deleteProviderKey = deleteProviderKey;

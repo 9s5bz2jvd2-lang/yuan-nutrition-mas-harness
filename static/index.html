@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>圆酱专属轻量版灵台 · LingTai Simple v0.8</title>
+  <title>圆酱专属轻量版灵台 · LingTai Simple v0.10</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <span class="logo">灵</span>
       <div class="brand-text">
         <h1>圆酱专属轻量版灵台</h1>
-        <p>LingTai Simple v0.8 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
+        <p>LingTai Simple v0.10 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
       </div>
     </div>
     <div class="badges">
@@ -26,8 +26,8 @@
 
   <section class="quickstart card mini-card">
     <div>
-      <h2>✨ v0.8 快速体验</h2>
-      <p class="hint">真实能力里程碑：模型 / API 中心可存 Keychain 并发起真实模型调用；时间机器可创建 git 快照并在确认后真实 rollback；微信入口可由当前 LingTai WeChat MCP 桥接；Claude Code L1 只读分析已真实接入。改码 / L3 本地 commit 已真实接入；PR / merge 仍未接入真实执行器，不冒充完成。</p>
+      <h2>✨ v0.10 快速体验</h2>
+      <p class="hint">真实能力里程碑：模型 / API 中心可存 Keychain 并发起真实模型调用；时间机器可创建 git 快照并在确认后真实 rollback；微信入口可由当前 LingTai WeChat MCP 桥接；Claude Code L1 只读分析已真实接入。改码 / L3 本地 commit / L4 GitHub PR / L5 merge 已真实接入确认闸；v0.10 新增多 agent 编排、洞察、心流本地回环。</p>
     </div>
     <div class="quick-actions">
       <button class="btn primary" data-act="load-demo">加载示例状态</button>
@@ -43,6 +43,15 @@
     </button>
     <button class="bigbtn" data-act="assign-task">
       <span class="bb-icon">📨</span><span class="bb-label">本地记录任务</span>
+    </button>
+    <button class="bigbtn" data-act="multi-agent" title="真实本地编排：创建/选择多个子灵，拆分目标，记录批次与任务">
+      <span class="bb-icon">🧩</span><span class="bb-label">多 agent 编排</span>
+    </button>
+    <button class="bigbtn" data-act="insight" title="洞察：读取当前本地状态，生成风险/卡点/下一步">
+      <span class="bb-icon">🔎</span><span class="bb-label">生成洞察</span>
+    </button>
+    <button class="bigbtn" data-act="soul" title="心流：阶段性自我回环，收束任务与续功入口">
+      <span class="bb-icon">🌙</span><span class="bb-label">心流回环</span>
     </button>
     <button class="bigbtn" data-act="wechat" title="已接入真实桥接端点：当前 LingTai WeChat MCP 作为唯一收发桥">
       <span class="bb-icon">💬</span><span class="bb-label">微信入口（桥接真实）</span>
@@ -82,7 +91,7 @@
     <!-- 微信入口 -->
     <section class="card">
       <h2>💬 微信入口（真实桥接端点）</h2>
-      <p class="hint">v0.8 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
+      <p class="hint">v0.10 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
       <div class="inline-form">
         <input id="wx-input" type="text" placeholder="本地测试一条微信桥接任务" />
         <button class="btn" id="wx-send">写入桥接队列</button>
@@ -108,7 +117,7 @@
     <!-- Claude Code 苦力 -->
     <section class="card">
       <h2>🛠️ Claude Code 苦力（L1/L2 已真实接入）</h2>
-      <p class="hint">L1 会真实调用本机 claude CLI 做只读分析（Read/Grep/Glob）。L2 会在隔离 git worktree 中真实本地改码，通过 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L1/L2 均需勾选费用/改动确认。L3 commit 已接入真实本地执行器；L4/L5 PR/merge 仍只进确认队列，尚无真实执行器。</p>
+      <p class="hint">L1 会真实调用本机 claude CLI 做只读分析（Read/Grep/Glob）。L2 会在隔离 git worktree 中真实本地改码，通过 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L1/L2 均需勾选费用/改动确认。L3 commit 已接入真实本地执行器；L4/L5 PR/merge 已接入真实执行器，仍必须走确认队列。</p>
       <div id="cc-levels" class="list"></div>
       <button class="btn" data-act="cc">派一个代码苦力任务</button>
       <h3 class="sub">Claude Code 运行记录</h3>
