@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.2 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.3 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- 不访问外网。不真实发送微信/邮件/Telegram。不真实调用任何模型 API。
-- 不真实调用 Claude Code。不真实执行 rollback/reset。
-- 所有高危动作 → 写入「确认队列」(approval queue)，仅做 preview / mock execution。
-- 不保存明文 API key；只保存 configured=true 与可选 key 后四位 / label。
+- v0.3 主功能只承诺已经真实接入的能力：Keychain 密钥保险柜 + OpenAI-compatible 模型 API 调用。
+- 微信/邮件/Telegram 外发、Claude Code 执行、commit/PR/merge、rollback/reset 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
+- 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-纯 Python 标准库，无第三方依赖。
+v0.3 的「真实能力」（与 v0.2 的纯 mock 不同）：
+- 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
+- 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
+  并明确标注「可能产生费用」）。这是 v0.3 唯一会产生外部副作用的真实动作。
+
+Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
 
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
+import ctypes
+import ctypes.util
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
 # --------------------------------------------------------------------------
 # 路径与常量
@@ -44,21 +54,30 @@ SENSITIVE_ACTIONS = {
     "rollback_apply", "delete_agent", "file_delete", "high_cost_api",
 }
 
-# 供应商目录（第一批）
+# 供应商目录（OpenAI-compatible /chat/completions）。
+# default_model 仅作为 UI 默认填充；base_url / model 均可在界面编辑。
 PROVIDER_CATALOG = [
     {"id": "openai", "name": "GPT / OpenAI-compatible", "default_base_url": "https://api.openai.com/v1",
-     "tags": ["chat", "code", "vision"]},
-    {"id": "mimo", "name": "小米 MiMo", "default_base_url": "https://api.mimo.example/v1",
-     "tags": ["chat", "code"]},
+     "default_model": "gpt-4o-mini", "tags": ["chat", "code", "vision"]},
+    {"id": "mimo", "name": "小米 MiMo（需填写兼容端点）", "default_base_url": "",
+     "default_model": "", "tags": ["chat", "code", "needs-base-url"]},
     {"id": "deepseek", "name": "DeepSeek", "default_base_url": "https://api.deepseek.com/v1",
-     "tags": ["chat", "code", "cheap"]},
-    {"id": "minimax", "name": "MiniMax", "default_base_url": "https://api.minimax.example/v1",
-     "tags": ["chat", "tts", "image"]},
+     "default_model": "deepseek-chat", "tags": ["chat", "code", "cheap"]},
+    {"id": "minimax", "name": "MiniMax（需确认兼容端点）", "default_base_url": "",
+     "default_model": "", "tags": ["chat", "tts", "image", "needs-base-url"]},
     {"id": "glm", "name": "GLM / 智谱", "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
-     "tags": ["chat", "code", "vision"]},
+     "default_model": "glm-4-flash", "tags": ["chat", "code", "vision"]},
     {"id": "custom", "name": "自定义 (base_url + model)", "default_base_url": "",
-     "tags": ["custom"]},
+     "default_model": "", "tags": ["custom"]},
 ]
+PROVIDER_IDS = {p["id"] for p in PROVIDER_CATALOG}
+
+# Keychain 服务名前缀：每个供应商一个 account，便于增删查。
+KEYCHAIN_SERVICE = os.environ.get("LINGTAI_SIMPLE_KEYCHAIN_SERVICE", "lingtai-simple")
+
+# 真实模型调用的安全上限（避免误操作烧钱）。
+MODEL_CALL_TIMEOUT = 30          # 秒
+MODEL_CALL_MAX_TOKENS = 256      # 单次测试回复上限
 
 # Claude Code 苦力权限等级（merge 必须显式确认）
 CC_PERMISSION_LEVELS = [
@@ -110,6 +129,261 @@ def key_last4(raw_key):
     return raw_key[-4:]
 
 
+# --------------------------------------------------------------------------
+# Mac Keychain 密钥保险柜
+# --------------------------------------------------------------------------
+# 设计：明文 API key 只进 macOS 系统 Keychain（generic-password），永不落到
+# state.json / 日志 / API 响应。account = provider_id，service = KEYCHAIN_SERVICE。
+# 若 `security` CLI 不可用（非 mac / 被裁剪），所有操作返回清晰错误，绝不退化为明文存储。
+
+class KeychainUnavailable(Exception):
+    """macOS `security` CLI 不可用时抛出。"""
+
+
+# Security.framework OSStatus values used here.
+ERR_SEC_SUCCESS = 0
+ERR_SEC_DUPLICATE_ITEM = -25299
+ERR_SEC_ITEM_NOT_FOUND = -25300
+
+_SECURITY = None
+_COREFOUNDATION = None
+
+def _load_security_framework():
+    """Load macOS Security.framework through ctypes. No shell argv secrets."""
+    global _SECURITY, _COREFOUNDATION
+    if _SECURITY is not None:
+        return _SECURITY, _COREFOUNDATION
+    sec_path = ctypes.util.find_library("Security")
+    cf_path = ctypes.util.find_library("CoreFoundation")
+    if not sec_path or not cf_path:
+        raise KeychainUnavailable(
+            "未找到 macOS Security.framework：本机可能不是 macOS，或 Keychain 不可用。"
+            "为安全起见，不会把明文 API key 落到磁盘。"
+        )
+    sec = ctypes.CDLL(sec_path)
+    cf = ctypes.CDLL(cf_path)
+
+    sec.SecKeychainAddGenericPassword.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
+        ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
+    ]
+    sec.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+    sec.SecKeychainFindGenericPassword.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)
+    ]
+    sec.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+    sec.SecKeychainItemModifyAttributesAndData.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p
+    ]
+    sec.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+    sec.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
+    sec.SecKeychainItemDelete.restype = ctypes.c_int32
+    sec.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    sec.SecKeychainItemFreeContent.restype = ctypes.c_int32
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    cf.CFRelease.restype = None
+
+    _SECURITY, _COREFOUNDATION = sec, cf
+    return sec, cf
+
+
+def _release_item(item_ref):
+    if item_ref:
+        try:
+            _load_security_framework()[1].CFRelease(item_ref)
+        except Exception:
+            pass
+
+
+def _status_message(status):
+    common = {
+        ERR_SEC_DUPLICATE_ITEM: "Keychain 已存在同名项目",
+        ERR_SEC_ITEM_NOT_FOUND: "Keychain 中未找到该项目",
+        -25308: "Keychain 当前不允许交互或被锁定",
+        -25293: "Keychain 认证失败",
+    }
+    return common.get(status, f"OSStatus {status}")
+
+
+def _keychain_find_item(provider_id, want_password=False):
+    sec, _cf = _load_security_framework()
+    service = KEYCHAIN_SERVICE.encode("utf-8")
+    account = provider_id.encode("utf-8")
+    password_len = ctypes.c_uint32(0)
+    password_data = ctypes.c_void_p()
+    item_ref = ctypes.c_void_p()
+    status = sec.SecKeychainFindGenericPassword(
+        None, len(service), service, len(account), account,
+        ctypes.byref(password_len) if want_password else None,
+        ctypes.byref(password_data) if want_password else None,
+        ctypes.byref(item_ref),
+    )
+    if status == ERR_SEC_ITEM_NOT_FOUND:
+        return status, None, None
+    if status != ERR_SEC_SUCCESS:
+        return status, None, None
+    password = None
+    if want_password and password_data and password_len.value:
+        try:
+            password = ctypes.string_at(password_data, password_len.value).decode("utf-8")
+        finally:
+            sec.SecKeychainItemFreeContent(None, password_data)
+    return status, item_ref, password
+
+
+def keychain_available():
+    """是否能用 macOS Security.framework Keychain。"""
+    try:
+        _load_security_framework()
+        return True
+    except KeychainUnavailable:
+        return False
+
+
+def keychain_set(provider_id, raw_key):
+    """把明文 key 写入 Keychain（存在则覆盖）。不经 shell/argv，不记录明文。"""
+    sec, _cf = _load_security_framework()
+    service = KEYCHAIN_SERVICE.encode("utf-8")
+    account = provider_id.encode("utf-8")
+    secret = (raw_key or "").encode("utf-8")
+    item_ref = ctypes.c_void_p()
+    status = sec.SecKeychainAddGenericPassword(
+        None, len(service), service, len(account), account,
+        len(secret), ctypes.c_char_p(secret), ctypes.byref(item_ref)
+    )
+    if status == ERR_SEC_SUCCESS:
+        _release_item(item_ref)
+        return True
+    if status == ERR_SEC_DUPLICATE_ITEM:
+        find_status, existing_ref, _password = _keychain_find_item(provider_id, want_password=False)
+        if find_status != ERR_SEC_SUCCESS or not existing_ref:
+            raise KeychainUnavailable(f"更新 Keychain 失败：{_status_message(find_status)}")
+        try:
+            update_status = sec.SecKeychainItemModifyAttributesAndData(
+                existing_ref, None, len(secret), ctypes.c_char_p(secret)
+            )
+        finally:
+            _release_item(existing_ref)
+        if update_status == ERR_SEC_SUCCESS:
+            return True
+        raise KeychainUnavailable(f"更新 Keychain 失败：{_status_message(update_status)}")
+    raise KeychainUnavailable(f"写入 Keychain 失败：{_status_message(status)}")
+
+
+def keychain_get(provider_id):
+    """读取明文 key（仅用于真实模型调用时即时取用）。失败返回 None。"""
+    status, item_ref, password = _keychain_find_item(provider_id, want_password=True)
+    _release_item(item_ref)
+    if status != ERR_SEC_SUCCESS:
+        return None
+    return password or None
+
+
+def keychain_delete(provider_id):
+    """从 Keychain 删除 key。不存在视为已删除。"""
+    status, item_ref, _password = _keychain_find_item(provider_id, want_password=False)
+    if status == ERR_SEC_ITEM_NOT_FOUND:
+        return True
+    if status != ERR_SEC_SUCCESS or not item_ref:
+        return False
+    try:
+        return _load_security_framework()[0].SecKeychainItemDelete(item_ref) == ERR_SEC_SUCCESS
+    finally:
+        _release_item(item_ref)
+
+
+def keychain_has(provider_id):
+    """Keychain 是否存在该供应商的 key（不读出明文）。"""
+    status, item_ref, _password = _keychain_find_item(provider_id, want_password=False)
+    _release_item(item_ref)
+    return status == ERR_SEC_SUCCESS
+
+
+# --------------------------------------------------------------------------
+# 真实模型调用（OpenAI-compatible /chat/completions）
+# --------------------------------------------------------------------------
+# 这是 v0.3 唯一会产生真实外部副作用（网络请求 + 可能计费）的能力。
+# 必须由 UI 显式触发；key 从 Keychain 即时取用，绝不写入状态/日志/响应。
+
+def _chat_completions_url(base_url):
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("base_url 为空，无法发起真实调用。")
+    # 允许传入已含 /chat/completions 的完整 URL。
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
+
+
+def real_model_call(base_url, model, api_key, prompt, max_tokens=MODEL_CALL_MAX_TOKENS):
+    """
+    发起一次真实的 chat completion 请求。返回 (result_dict, error_str)。
+    成功 result 含：reply（截断的回复文本）、model、usage、latency_ms、http_status。
+    绝不在返回值或日志中包含 api_key。
+    """
+    if not api_key:
+        return None, "Keychain 中没有该供应商的 key，请先在「模型 / API 中心」保存 key。"
+    if not (model or "").strip():
+        return None, "未指定模型名（model）。"
+    try:
+        url = _chat_completions_url(base_url)
+    except ValueError as e:
+        return None, str(e)
+
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a connectivity test. Reply with a short confirmation."},
+            {"role": "user", "content": prompt or "Hello! Please reply with one short sentence."},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }).encode("utf-8")
+
+    req = Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {api_key}")
+
+    t0 = datetime.now(timezone.utc)
+    try:
+        with urlopen(req, timeout=MODEL_CALL_TIMEOUT) as resp:
+            status = resp.getcode()
+            raw = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        # 脱敏后返回，绝不回显任何可能的凭证片段。
+        return None, redact(f"HTTP {e.code}：{detail or e.reason}")
+    except URLError as e:
+        return None, redact(f"网络错误：{getattr(e, 'reason', e)}")
+    except Exception as e:  # 兜底，避免把堆栈里潜在的 key 暴露
+        return None, redact(f"调用失败：{e}")
+
+    latency_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"reply": redact(raw[:500]), "model": model,
+                "http_status": status, "latency_ms": latency_ms, "usage": None}, None
+
+    reply = ""
+    try:
+        reply = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        reply = redact(json.dumps(data)[:500])
+    return {
+        "reply": redact((reply or "").strip()[:1000]),
+        "model": data.get("model") or model,
+        "http_status": status,
+        "latency_ms": latency_ms,
+        "usage": data.get("usage"),
+    }, None
+
+
 def parse_level(value, default=1):
     """
     兼容前端/手工 API 传入的 Claude Code 权限等级。
@@ -132,7 +406,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.2",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.3",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -380,14 +654,38 @@ def _apply_approved_action(state, ap):
                     ag["status"] = "待命"
 
 
+def _provider_entry(state, provider_id):
+    for p in state.get("providers", []):
+        if p["provider_id"] == provider_id:
+            return p
+    return None
+
+
 def save_provider(state, payload):
+    """保存供应商配置。若带 api_key，则把明文 key 写入 Mac Keychain（不落 state.json）。"""
     provider_id = payload.get("provider_id")
     catalog = {p["id"]: p for p in PROVIDER_CATALOG}
     if provider_id not in catalog:
         return None, "未知供应商"
-    raw_key = payload.get("api_key") or ""   # 仅用于提取后四位，绝不存全量
+    raw_key = (payload.get("api_key") or "").strip()   # 仅用于写 Keychain + 取后四位，绝不存进 state
     base_url = (payload.get("base_url") or catalog[provider_id]["default_base_url"]).strip()
     model = (payload.get("model") or "").strip()
+
+    existing = _provider_entry(state, provider_id) or {}
+    in_keychain = bool(existing.get("in_keychain"))
+    key_last4_val = existing.get("key_last4")
+
+    # 若提供了新 key → 写入 Keychain（失败则整笔失败，绝不退化为明文存储）
+    if raw_key:
+        if not keychain_available():
+            return None, ("无法保存 key：本机无法使用 macOS Security.framework（Keychain 不可用）。"
+                          "为防止明文泄露，已拒绝保存。你仍可只保存 base_url / model（不含 key）。")
+        try:
+            keychain_set(provider_id, raw_key)
+        except KeychainUnavailable as e:
+            return None, str(e)
+        in_keychain = True
+        key_last4_val = key_last4(raw_key)
 
     entry = {
         "provider_id": provider_id,
@@ -395,17 +693,89 @@ def save_provider(state, payload):
         "base_url": base_url,
         "model": model,
         "tags": catalog[provider_id]["tags"],
-        "configured": bool(raw_key),
-        "key_label": payload.get("key_label") or None,
-        "key_last4": key_last4(raw_key) if raw_key else None,
+        "configured": in_keychain,
+        "in_keychain": in_keychain,           # key 是否存在于 Keychain
+        "key_label": payload.get("key_label") or existing.get("key_label") or None,
+        "key_last4": key_last4_val,           # 仅展示用的后四位
         "updated_at": now_iso(),
     }
+    # 防御性：绝不把明文 key 放进可序列化的 entry
+    entry.pop("api_key", None)
     # upsert
     state["providers"] = [p for p in state["providers"] if p["provider_id"] != provider_id]
     state["providers"].append(entry)
     # 日志绝不打印 key
-    log_event(state, f"保存供应商配置：{entry['name']}（configured={entry['configured']}）")
+    log_event(state, f"保存供应商配置：{entry['name']}（in_keychain={in_keychain}）")
     return entry, None
+
+
+def delete_provider_key(state, payload):
+    """从 Keychain 删除该供应商的 key，并把状态标记为未配置（保留 base_url / model）。"""
+    provider_id = payload.get("provider_id")
+    if provider_id not in PROVIDER_IDS:
+        return None, "未知供应商"
+    if not keychain_available():
+        return None, "Keychain 不可用（非 macOS 或无法加载 Security.framework）。"
+    keychain_delete(provider_id)  # 不存在视为已删除
+    entry = _provider_entry(state, provider_id)
+    if entry:
+        entry["in_keychain"] = False
+        entry["configured"] = False
+        entry["key_last4"] = None
+        entry["updated_at"] = now_iso()
+    log_event(state, f"已从 Keychain 删除 key：{provider_id}")
+    return {"provider_id": provider_id, "in_keychain": False}, None
+
+
+def check_provider_key(state, payload):
+    """检查 Keychain 中是否存在该供应商的 key（不读出明文）。同步修正 state 标记。"""
+    provider_id = payload.get("provider_id")
+    if provider_id not in PROVIDER_IDS:
+        return None, "未知供应商"
+    if not keychain_available():
+        return {"provider_id": provider_id, "keychain_available": False,
+                "in_keychain": False,
+                "note": "本机无法加载 macOS Security.framework，无法使用 Keychain。"}, None
+    present = keychain_has(provider_id)
+    entry = _provider_entry(state, provider_id)
+    if entry:
+        entry["in_keychain"] = present
+        entry["configured"] = present
+        if not present:
+            entry["key_last4"] = None
+    return {"provider_id": provider_id, "keychain_available": True,
+            "in_keychain": present}, None
+
+
+def prepare_model_test(state, payload):
+    """
+    真实模型调用的「锁内准备」阶段：校验 + 从 Keychain 取 key + 解析 base_url/model。
+    返回 (call_spec, error)。call_spec 含明文 key，仅供随后（锁外）发起网络请求用，
+    绝不写入 state / 日志 / 响应。
+    """
+    provider_id = payload.get("provider_id")
+    if provider_id not in PROVIDER_IDS:
+        return None, "未知供应商"
+    if not payload.get("confirm_cost"):
+        return None, "真实调用可能产生费用，请在界面勾选/确认后再试。"
+
+    entry = _provider_entry(state, provider_id) or {}
+    catalog = {p["id"]: p for p in PROVIDER_CATALOG}
+    base_url = (payload.get("base_url") or entry.get("base_url")
+                or catalog[provider_id]["default_base_url"])
+    model = (payload.get("model") or entry.get("model")
+             or catalog[provider_id]["default_model"])
+    prompt = (payload.get("prompt") or "").strip()
+
+    if not keychain_available():
+        return None, "Keychain 不可用（非 macOS 或无法加载 Security.framework），无法取出 key 进行真实调用。"
+    api_key = keychain_get(provider_id)
+    if not api_key:
+        return None, "Keychain 中没有该供应商的 key，请先在「模型 / API 中心」保存 key。"
+
+    log_event(state, f"真实模型调用（可能计费）：{provider_id} / {model}", kind="real_api")
+    return {"provider_id": provider_id, "base_url": base_url, "model": model,
+            "prompt": prompt, "api_key": api_key}, None
 
 
 def wechat_submit(state, payload):
@@ -468,7 +838,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0（本地原型 / 所有执行均为 mock）")
+    lines.append("> 圆酱专属轻量版灵台 v0.3（本地原型 / Keychain 与模型 API 已真实接入；其他执行按未接入标注）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -562,10 +932,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.2（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.3（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.2 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.3 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -583,14 +953,16 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.2",
+        "version": "v0.3",
         "host": HOST,
         "port": PORT,
         "checks": checks,
+        "keychain_available": keychain_available(),
         "boundaries": [
-            "localhost-only", "mock-only high-risk actions",
-            "no real model API calls", "no real WeChat/email/Telegram sends",
-            "no plaintext API key storage",
+            "localhost-only",
+            "real model API calls require explicit UI action (may cost money)",
+            "not connected yet: WeChat/email/Telegram send, Claude Code execution, commit/PR/merge, rollback",
+            "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
 
@@ -669,6 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
                 "providers": PROVIDER_CATALOG,
                 "cc_levels": CC_PERMISSION_LEVELS,
                 "max_agents": MAX_AGENTS,
+                "keychain_available": keychain_available(),
             })
         if route == "/api/rollback/preview":
             state = load_state()
@@ -685,6 +1058,10 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         payload = self._read_body()
 
+        # 真实模型调用单独处理：网络请求（最长 30s）在锁外进行，避免阻塞 UI 轮询。
+        if route == "/api/model/test":
+            return self._handle_model_test(payload)
+
         with _LOCK:
             state = load_state()
             handler = self._post_routes().get(route)
@@ -699,6 +1076,35 @@ class Handler(BaseHTTPRequestHandler):
             resp["state"] = self._public_state(state)
             return self._send_json(resp)
 
+    def _handle_model_test(self, payload):
+        """真实模型调用：锁内取 key/配置 → 锁外发请求 → 锁内记日志并存盘。"""
+        with _LOCK:
+            state = load_state()
+            spec, err = prepare_model_test(state, payload)
+            if err:
+                return self._send_json({"ok": False, "error": err}, 400)
+            save_state(state)  # 已记录「发起调用」日志
+
+        # 锁外：发起真实网络请求（可能耗时 / 可能计费）。spec 含明文 key，仅本地内存。
+        result, err = real_model_call(
+            spec["base_url"], spec["model"], spec["api_key"], spec["prompt"])
+        spec["api_key"] = None  # 立即丢弃 key 引用
+
+        with _LOCK:
+            state = load_state()
+            pid = spec["provider_id"]
+            if err:
+                log_event(state, f"真实模型调用失败：{pid}（{err[:80]}）", kind="real_api")
+                save_state(state)
+                resp = {"ok": False, "error": err, "state": self._public_state(state)}
+                return self._send_json(resp, 400)
+            result.pop("api_key", None)  # 防御性
+            log_event(state, f"真实模型调用成功：{pid} / {result.get('model')} "
+                             f"（{result.get('latency_ms')}ms）", kind="real_api")
+            save_state(state)
+            return self._send_json({"ok": True, "result": result,
+                                    "state": self._public_state(state)})
+
     def _post_routes(self):
         return {
             "/api/agent/create": lambda s, p: create_agent(s, p),
@@ -710,6 +1116,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/approval/approve": lambda s, p: resolve_approval(s, p.get("approval_id"), "approve"),
             "/api/approval/deny": lambda s, p: resolve_approval(s, p.get("approval_id"), "deny"),
             "/api/provider/save": lambda s, p: save_provider(s, p),
+            "/api/provider/delete_key": lambda s, p: delete_provider_key(s, p),
+            "/api/provider/check_key": lambda s, p: check_provider_key(s, p),
             "/api/wechat/submit": lambda s, p: wechat_submit(s, p),
             "/api/demo/load": lambda s, p: load_demo_state(s, p),
             "/api/shougong": lambda s, p: (generate_shougong(s), None),
@@ -772,7 +1180,7 @@ def ensure_example_state():
     example["providers"] = [{
         "provider_id": "deepseek", "name": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
-        "tags": ["chat", "code", "cheap"], "configured": True,
+        "tags": ["chat", "code", "cheap"], "configured": True, "in_keychain": True,
         "key_label": "圆酱-DS", "key_last4": "1234", "updated_at": now_iso(),
     }]
     example["wechat_inbox"] = [{
@@ -796,7 +1204,7 @@ def main():
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
-    print("  边界 : localhost-only / 全部执行均为 mock / 不外发 / 不真实改码")
+    print("  边界 : localhost-only / Keychain + 模型 API 为真实能力 / 微信-CC-rollback 尚未接入")
     print("  停止 : Ctrl+C")
     print("=" * 64)
     try:

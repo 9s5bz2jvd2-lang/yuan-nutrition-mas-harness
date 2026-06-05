@@ -1,23 +1,39 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.2 — 大按钮原型
+# 圆酱专属轻量版灵台 / LingTai Simple v0.3
 
-一个**本地可运行**的「傻瓜版灵台」原型：普通人一眼能懂的大按钮界面，围绕圆酱的真实需求（微信入口、最多 5 个灵、模型/API 中心、Claude Code 代码苦力、确认队列、收功、时间机器）。
+> **原则：本页只把已经真实接入的能力当成功能。未接入能力必须灰显或写进“下一步”，不再用 mock 冒充能用。**
 
-> ⚠️ 这是 **v0 原型**：**所有高危动作都是 mock**。不外发、不真实改码、不真实 rollback、不回显 key。
+这是“傻瓜版灵台”的本地可运行原型。v0.3 的目标不是把所有灵台能力一次性做完，而是把第一批真实能力接进去，并把还没接入的能力诚实标出来。
 
----
+## v0.3 已真实接入
 
-## v0.2 更新
+1. **Mac Keychain 密钥保险柜**
+   - API Key 写入 macOS 系统 Keychain。
+   - `state.json`、日志、接口响应不保存明文 key。
+   - 当前实现通过 macOS `Security.framework`（Python `ctypes`）调用 Keychain，不把 key 放进 shell 命令参数。
+   - Keychain 不可用或系统拒绝时直接报错，不退化成明文存储。
 
-- GUI 已改成圆酱指定的**低饱和度粉蓝色**：雾面浅蓝底、低饱和粉紫主色、柔和蓝色按钮与卡片。
-- 新增「加载示例状态」「健康检查」「怎么看这个原型」三个快速体验入口。
-- 新增 Mac 双击启动文件：`启动圆酱灵台.command`。
-- 新增 `scripts/self_check.py` 本地自检脚本。
+2. **真实模型 API 调用**
+   - 支持 OpenAI-compatible `/chat/completions`。
+   - UI 必须显式点击“运行真实模型测试”，并勾选“可能产生费用”，才会发起网络请求。
+   - 单次测试有超时和 token 上限，避免误烧钱。
+   - 支持配置：GPT/OpenAI-compatible、DeepSeek、GLM/智谱、自定义 base_url+model；小米 MiMo、MiniMax 先保留为可填写自定义兼容端点，不硬编未核验 URL。
 
----
+3. **本地 GUI / 状态管理**
+   - 大按钮界面、最多 5 个“灵”的本地状态卡。
+   - 本地任务停车场、确认队列、一键收功 Markdown、健康检查。
+   - 这些是本地编排/记录能力，不等于已经接入真实灵台 runtime。
 
-## 1. 如何运行
+## v0.3 尚未真实接入（不算完成功能）
 
-只需要 Python 3（标准库，**零第三方依赖**）。
+这些能力是圆酱明确需要的，但 v0.3 里还没接入真实执行链，所以页面已灰显或标成下一阶段：
+
+- **微信 bot 指令入口**：必须像当前灵台一样，圆酱在微信发指令 → 系统收任务 → 派活 → 结果回微信。下一阶段优先接。
+- **Claude Code 真实苦力**：受控 worktree、权限分级、本地改码、commit、PR、merge。下一阶段接入；merge 必须显式确认。
+- **真实 commit/push/PR/merge**：目前不从此应用执行。
+- **真实 rollback / Time Machine**：等待接 LingTai rollback PR 能力后再做，仍需二次确认。
+- **微信 / 邮件 / Telegram 外发**：未接入真实外发，不当成功能展示。
+
+## 运行方式
 
 ```bash
 git clone https://github.com/9s5bz2jvd2-lang/yuanjiang-lingtai-simple.git
@@ -25,103 +41,95 @@ cd yuanjiang-lingtai-simple
 python3 server.py
 ```
 
-然后浏览器打开：**http://127.0.0.1:8765/**
+浏览器打开：
 
-自定义端口/地址（默认 localhost）：
+```text
+http://127.0.0.1:8765/
+```
 
-```bash
-LINGTAI_SIMPLE_PORT=8771 python3 server.py
+也可以双击：
+
+```text
+启动圆酱灵台.command
 ```
 
 停止：`Ctrl+C`。
 
----
+## 使用 v0.3 的真实模型 API
 
-## 2. 界面里有什么（大按钮）
+1. 打开“模型 / API 中心”。
+2. 选择供应商，填写 `base_url`、`model`、API key。
+3. 保存后，key 会进入 Mac Keychain；界面只显示“已配置”和后四位。
+4. 勾选“我已知道这是真实调用、可能产生费用”。
+5. 点击“运行真实模型测试”。
 
-| 大按钮 | 作用 |
-|---|---|
-| 🌱 新建一个灵 | 起名、选角色（长期助手/临时分析/代码苦力）、选模型、设 Claude Code 权限等级。最多 5 个。 |
-| 📨 给灵派任务 | 一句话派活。普通任务自动 mock 完成；敏感任务进确认队列。 |
-| 💬 微信入口任务 | 模拟「微信发一句话」：自动 ACK → 排队 → 执行 → 完成；含敏感关键词自动进确认队列。 |
-| 🧠 模型 / API 中心 | GPT/OpenAI-compatible、小米 MiMo、DeepSeek、MiniMax、GLM/智谱、自定义。只显示「已配置」+ 后四位。 |
-| 🛠️ Claude Code 苦力 | 只读分析 / 本地改码 / commit / PR / merge 权限分级；merge 必须显式确认。 |
-| ✅ 确认队列 | 外发/改码/PR/merge/rollback/删除 等敏感动作先 preview，再确认或拒绝。 |
-| 📋 一键收功 | 生成 Markdown 收功单（已完成/未完成/待确认/灵状态/下一步），存到 `data/shougong/`。 |
-| ⏪ 时间机器 / 回退 | 只 mock 列 snapshot 和 diff；点回退仅进确认队列预览，**不真实 reset**。 |
+> 如果 Keychain 被系统拒绝（例如无交互 session、钥匙串锁定），保存 key 会失败；这是安全失败，不会把 key 写到 JSON 文件。
 
-页面还包含：**灵状态卡**、**任务停车场**、**context 压力条**、**事件日志（脱敏）**。
+## 本地文件结构
 
----
-
-## 3. 哪些是 mock（边界）
-
-**全部高危动作都不会产生真实副作用：**
-
-- ❌ 不真实发送微信 / 邮件 / Telegram —— 只生成 preview。
-- ❌ 不真实调用任何模型 API（GPT/MiMo/DeepSeek/MiniMax/GLM 等）。
-- ❌ 不真实调用 Claude Code，不真实 commit/push/PR/merge。
-- ❌ 不真实 rollback / git reset。
-- ❌ 不访问外网。服务默认绑定 `127.0.0.1`，并在请求层拒绝非本机来源。
-
-**凭证安全：**
-
-- 不保存明文 API key。输入 key 只用于提取**后四位**展示，后端保存 `configured: true` + `key_last4` + 可选 `key_label`。
-- 界面不回显明文 key；日志/收功单/API 响应自动脱敏（`sk-...`、长 token、`Bearer ...` → `****REDACTED****`）。
-- 已验证：`data/state.json` 中不含任何明文 key。
-
----
-
-## 4. 文件结构
-
-```
+```text
 yuanjiang-lingtai-simple/
-├── README.md                  # 本文件
-├── IMPLEMENTATION_REPORT.md   # 做了什么 / 如何验证 / 限制
-├── server.py                  # 本地 stdlib HTTP 服务 + 状态/API
+├── README.md
+├── IMPLEMENTATION_REPORT.md
+├── CLAUDE_CODE_REVIEW.md          # v0.2 推送前 Claude Code 安全复检记录
+├── server.py                      # 本地 HTTP 服务 + Keychain + OpenAI-compatible 调用
 ├── static/
-│   ├── index.html             # 大按钮 UI
-│   ├── styles.css             # 温暖但清晰的中文界面
-│   └── app.js                 # 前端逻辑（原生 JS，无依赖）
+│   ├── index.html
+│   ├── styles.css
+│   └── app.js
+├── scripts/
+│   ├── self_check.py              # 本地自检；不调用真实外部模型
+│   └── load_demo.py
 └── data/
-    ├── state.json             # 运行时状态（首启动自动创建）
-    ├── state.example.json     # 示例数据（参考用）
-    └── shougong/              # 生成的收功单 Markdown
+    ├── state.example.json
+    └── shougong/                  # 运行时生成，git 忽略
 ```
 
----
+## 本地 API 边界
 
-## 5. 最小后端 API（本地）
+真实接入：
 
-| 方法 | 路径 | 作用 |
+| 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/state` | 读取公开状态（供应商不含任何 key） |
-| GET | `/api/catalog` | 供应商目录 + CC 权限等级 + 上限 |
-| POST | `/api/agent/create` | 新建灵（≤5） |
-| POST | `/api/task/assign` | 派任务（敏感→确认队列） |
-| POST | `/api/agent/pause` `/resume` `/delete` | 暂停/恢复/删除（删除走确认队列） |
-| POST | `/api/approval/add` `/approve` `/deny` | 确认队列增/确认/拒绝 |
-| POST | `/api/provider/save` | 保存供应商配置（脱敏，不存明文 key） |
-| POST | `/api/wechat/submit` | 微信任务入队（mock ACK/执行） |
-| POST | `/api/shougong` | 生成收功单 Markdown |
-| GET | `/api/rollback/preview` · POST `/api/rollback/request` | 快照预览 / 回退请求（进确认队列，不真实 reset） |
-| POST | `/api/cc/request` | Claude Code 苦力任务（按等级走确认队列） |
-| POST | `/api/reset` | 重置原型数据 |
+| POST | `/api/provider/save` | 保存 provider 配置；带 key 时写入 Keychain |
+| POST | `/api/provider/check_key` | 检查 Keychain 是否有 key，不读出明文 |
+| POST | `/api/provider/delete_key` | 删除 Keychain 中的 key |
+| POST | `/api/model/test` | 真实模型调用；必须 `confirm_cost=true` |
+| POST | `/api/shougong` | 生成本地收功单 Markdown |
+| GET | `/api/health` | 健康检查 |
 
----
+本地状态/编排记录：
 
-## 6. 下一步（v0 之后）
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/state` | 读本地公开状态，不含明文 key |
+| GET | `/api/catalog` | 供应商目录、上限、能力标注 |
+| POST | `/api/agent/create` | 本地创建“灵”的状态卡 |
+| POST | `/api/task/assign` | 本地记录任务状态；不等于真实 agent runtime |
+| POST | `/api/approval/*` | 本地确认队列记录 |
 
-1. 接真实 LingTai mailbox / WeChat addon（仍走主控路由 + 确认队列）。
-2. Secret Vault 升级为 Mac Keychain，启动时扫描明文 key 风险并提示迁移。
-3. 接真实 Claude Code worker（受控 worktree，权限分级，merge 永远显式确认）。
-4. 接 PR #228 Time Machine 真实 snapshot（仍二次确认，标注不可撤回外部副作用）。
-5. 成熟后把稳定组件回流 LingTai Portal 的 Simple mode。
+未接入真实执行链的旧端点若保留，仅供历史/内部占位，不应当在主界面当成功能展示。
 
-> 本原型**不修改 LingTai 主仓库源码**；代码内所有高危动作仍为 mock/preview。
+## 自检
 
----
+```bash
+python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
+python3 scripts/self_check.py
+```
 
-## 7. Claude Code 安全复检
+`self_check.py` 不会调用真实外部模型 API。它只验证：服务能启动、Keychain 行为安全、假 key 不落盘、未确认费用时模型调用会被拒绝。
 
-推送前已让 Claude Code 做只读安全复检，结论为：**SAFE TO PUSH，无阻断项**。详见 [`CLAUDE_CODE_REVIEW.md`](CLAUDE_CODE_REVIEW.md)。
+## 下一阶段优先级
+
+1. **真实微信 bot 指令入口**：圆酱微信发指令 → 轻量版灵台收任务 → 派给模型/子灵/Claude Code → 回微信。
+2. **真实 Claude Code worker**：受控目录、权限分级、改码/commit/PR/merge 确认闸。
+3. **Mac 小应用包装**：不是只靠浏览器和命令行。
+4. **真实 LingTai runtime / mailbox / skills / memory 接入**。
+5. **Time Machine / rollback 接入**：只在二次确认后执行。
+
+## 安全原则
+
+- 不保存明文 key。
+- 不把未接入能力包装成已可用功能。
+- 真实外部副作用必须可见、可确认、可追溯。
+- 默认 localhost-only。

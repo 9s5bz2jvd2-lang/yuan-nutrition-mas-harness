@@ -158,6 +158,13 @@ textarea { min-height: 70px; resize: vertical; }
 .btn.danger:hover { background: #f7e9ef; }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 5px 10px; font-size: 12px; }
+.btn.warn { background: linear-gradient(135deg, #e0a96d, #d98a3d); color: #fff; border-color: #d39150; }
+.btn.warn:hover { background: linear-gradient(135deg, #d9985a, #c87a2f); }
+
+/* Keychain / 真实调用表单小元素 */
+.checkrow { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; cursor: pointer; }
+.checkrow input { width: auto; margin: 0; }
+hr.soft { border: none; border-top: 1px solid #d8e2ee; margin: 16px 0 4px; }
 
 /* 预览框 */
 .preview {
@@ -214,4 +221,11 @@ textarea { min-height: 70px; resize: vertical; }
   .quickstart { flex-direction: column; align-items: stretch; }
   .quick-actions { justify-content: stretch; }
   .quick-actions .btn { flex: 1 1 100%; }
+}
+
+.bigbtn.disabled, .bigbtn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  filter: grayscale(0.25);
+  box-shadow: none;
 }
