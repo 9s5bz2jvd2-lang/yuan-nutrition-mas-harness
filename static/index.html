@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>圆酱专属轻量版灵台 · LingTai Simple v0.6</title>
+  <title>圆酱专属轻量版灵台 · LingTai Simple v0.7</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <span class="logo">灵</span>
       <div class="brand-text">
         <h1>圆酱专属轻量版灵台</h1>
-        <p>LingTai Simple v0.6 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
+        <p>LingTai Simple v0.7 · 本页只把已真实接入的能力当成功能 · 未接入能力灰显</p>
       </div>
     </div>
     <div class="badges">
@@ -26,7 +26,7 @@
 
   <section class="quickstart card mini-card">
     <div>
-      <h2>✨ v0.6 快速体验</h2>
+      <h2>✨ v0.7 快速体验</h2>
       <p class="hint">真实能力里程碑：模型 / API 中心可存 Keychain 并发起真实模型调用；时间机器可创建 git 快照并在确认后真实 rollback；微信入口可由当前 LingTai WeChat MCP 桥接；Claude Code L1 只读分析已真实接入。改码 / commit / PR / merge 仍未接入真实执行器，不冒充完成。</p>
     </div>
     <div class="quick-actions">
@@ -50,8 +50,8 @@
     <button class="bigbtn" data-act="models">
       <span class="bb-icon">🧠</span><span class="bb-label">模型 / API 中心</span>
     </button>
-    <button class="bigbtn" data-act="cc" title="L1 只读分析已真实调用 Claude Code；L2+ 仍进确认队列">
-      <span class="bb-icon">🛠️</span><span class="bb-label">Claude Code（L1 真实只读）</span>
+    <button class="bigbtn" data-act="cc" title="L1 只读分析与 L2 本地改码已真实调用 Claude Code；L3+ 仍进确认队列">
+      <span class="bb-icon">🛠️</span><span class="bb-label">Claude Code（L1/L2 真实）</span>
     </button>
     <button class="bigbtn highlight" data-act="approvals">
       <span class="bb-icon">✅</span><span class="bb-label">确认队列</span>
@@ -82,7 +82,7 @@
     <!-- 微信入口 -->
     <section class="card">
       <h2>💬 微信入口（真实桥接端点）</h2>
-      <p class="hint">v0.6 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
+      <p class="hint">v0.7 不启动第二个微信 poller；真实运行时由当前 LingTai WeChat MCP 作为唯一收发桥，把圆酱微信消息写入本服务并原路回复。这里也可做本地桥接测试。</p>
       <div class="inline-form">
         <input id="wx-input" type="text" placeholder="本地测试一条微信桥接任务" />
         <button class="btn" id="wx-send">写入桥接队列</button>
@@ -107,8 +107,8 @@
 
     <!-- Claude Code 苦力 -->
     <section class="card">
-      <h2>🛠️ Claude Code 苦力（L1 只读分析已真实接入）</h2>
-      <p class="hint">L1 会真实调用本机 claude CLI 做只读分析（需勾选费用确认；仅允许 Read/Grep/Glob，不允许改文件）。L2+ 改码/commit/PR/merge 仍只进确认队列，尚无真实执行器。</p>
+      <h2>🛠️ Claude Code 苦力（L1/L2 已真实接入）</h2>
+      <p class="hint">L1 会真实调用本机 claude CLI 做只读分析（Read/Grep/Glob）。L2 会在隔离 git worktree 中真实本地改码，通过 py_compile 与高置信秘密扫描后把 patch 应用回本仓库；L1/L2 均需勾选费用/改动确认。L3+ commit/PR/merge 仍只进确认队列，尚无真实执行器。</p>
       <div id="cc-levels" class="list"></div>
       <button class="btn" data-act="cc">派一个代码苦力任务</button>
       <h3 class="sub">Claude Code 运行记录</h3>
@@ -125,7 +125,7 @@
   </main>
 
   <footer class="footer">
-    <span>圆酱专属 · 本地运行 · Keychain + 模型 API + git Time Machine + 微信桥接 + Claude Code L1 只读分析真实可用 · 改码/PR/merge 未接入不算完成</span>
+    <span>圆酱专属 · 本地运行 · Keychain + 模型 API + git Time Machine + 微信桥接 + Claude Code L1/L2 真实可用 · commit/PR/merge 未接入不算完成</span>
     <button class="btn ghost small" data-act="load-demo">加载示例</button>
     <button class="btn ghost small" data-act="health">健康检查</button>
     <button class="btn ghost small" id="btn-reset">重置原型数据</button>

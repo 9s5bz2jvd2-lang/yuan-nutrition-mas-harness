@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.6 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.7 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -44,7 +44,7 @@ def main():
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.6', health
+        assert health['version']=='v0.7', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
@@ -111,7 +111,7 @@ def main():
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.6' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.7' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -120,16 +120,18 @@ def main():
         st=req('/api/state')
         assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
 
-        # ---- Claude Code L1：已是真实外部调用，必须显式确认费用；自检默认不烧钱，只验证未确认时拒绝、L2+ 仍只进确认队列 ----
+        # ---- Claude Code L1：已是真实外部调用，必须显式确认费用；自检默认不烧钱，只验证未确认时拒绝、L2 未确认时拒绝；L3+ 仍只进确认队列 ----
         cc_no=req('/api/cc/request', {'level':1,'description':'只读分析 README 结构'})
         assert not cc_no['ok'] and '费用' in (cc_no.get('error') or ''), cc_no
-        cc_l2=req('/api/cc/request', {'level':2,'description':'尝试改 README，但自检不真实执行'})
-        assert cc_l2['ok'] and cc_l2['result'].get('queued_approval') and cc_l2['result'].get('real_executor') is False, cc_l2
+        cc_l2_no=req('/api/cc/request', {'level':2,'description':'尝试改 README，但自检不真实执行'})
+        assert not cc_l2_no['ok'] and ('费用' in (cc_l2_no.get('error') or '') or '改动确认' in (cc_l2_no.get('error') or '')), cc_l2_no
+        cc_l3=req('/api/cc/request', {'level':3,'description':'尝试 commit，但自检不真实执行'})
+        assert cc_l3['ok'] and cc_l3['result'].get('queued_approval') and cc_l3['result'].get('real_executor') is False, cc_l3
         st2=req('/api/state')
         assert 'cc_runs' in st2, st2
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.6 self-check passed')
+        print('OK LingTai Simple v0.7 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

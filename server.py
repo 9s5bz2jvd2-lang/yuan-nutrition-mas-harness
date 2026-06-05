@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.6 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.7 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.6 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code 只读分析 worker。
+- v0.7 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code 只读分析 worker。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
-- Claude Code 只读分析已真实接入（需显式确认可能产生费用）；本地改码、commit、PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
+- Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.6 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.7 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
 - git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
 - 微信桥接入口：当前 LingTai/WeChat MCP 可把真实微信消息 POST 到本服务，本服务写入任务/确认队列并返回可原路回复的 `reply_text`。
-- Claude Code 只读分析 worker：显式确认费用后调用本机 `claude --print`，仅开放 Read/Grep/Glob 类只读工具，输出写入本地报告。
+- Claude Code worker：L1 显式确认费用后调用本机 `claude --print` 做只读分析；L2 在隔离 git worktree 中允许本地改码，经 py_compile 与高置信秘密扫描后把 patch 应用回本仓库，不 commit/PR/merge。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -48,6 +48,7 @@ STATE_PATH = os.path.join(DATA_DIR, "state.json")
 EXAMPLE_STATE_PATH = os.path.join(DATA_DIR, "state.example.json")
 SHOUGONG_DIR = os.path.join(DATA_DIR, "shougong")
 CC_RUN_DIR = os.path.join(DATA_DIR, "cc_runs")
+CC_WORKTREE_DIR = os.path.join(tempfile.gettempdir(), "lingtai-simple-cc-worktrees")
 
 HOST = os.environ.get("LINGTAI_SIMPLE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LINGTAI_SIMPLE_PORT", "8765"))
@@ -422,7 +423,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.6",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.7",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -432,14 +433,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.6 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.7 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 只读分析运行记录（v0.6 真实接入 L1）
+        "cc_runs": [],          # Claude Code 只读分析运行记录（v0.7 真实接入 L1）
         "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
@@ -471,10 +472,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.6 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.7 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.6"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.7"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -699,7 +700,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "code_commit", "code_pr", "code_merge", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.6 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
+                    t["result"] = f"已确认：{action}；当前 v0.7 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -912,7 +913,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.6 当前状态：",
+        "圆酱，LingTai Simple v0.7 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1051,7 +1052,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.6 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.7 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -1081,7 +1082,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.6（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析已真实接入；改码/commit/PR/merge 仍在接入中）")
+    lines.append("> 圆酱专属轻量版灵台 v0.7（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析已真实接入；改码/commit/PR/merge 仍在接入中）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -1113,7 +1114,7 @@ def generate_shougong(state):
     lines.append("- 检查 context 压力高的灵，必要时收束 / 凝蜕。")
     lines.append("")
     lines.append("## 🚧 边界提醒")
-    lines.append("- 本原型不真实发送任何消息、不真实改码/PR/merge；Time Machine / rollback 已真实接入，但只能回滚本仓库文件，不能撤回外部副作用。")
+    lines.append("- 本原型不真实发送任何消息；Time Machine / rollback 与 Claude Code L2 本地改码已真实接入，但只能作用于本仓库文件，不能撤回外部副作用；commit/PR/merge 仍未接入。")
     lines.append("- API key 仅以「已配置 + 后四位」形式保存，界面不回显明文。")
     md = "\n".join(lines)
 
@@ -1373,7 +1374,7 @@ def run_claude_code_readonly(run, desc):
         shutil.which("claude") or "claude",
         "--print",
         "--permission-mode", "plan",
-        "--tools", "Read,Grep,Glob",
+        "--allowedTools", "Read,Grep,Glob",
         "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
         "--max-budget-usd", str(CC_MAX_BUDGET_USD),
         "--no-session-persistence",
@@ -1416,25 +1417,265 @@ def run_claude_code_readonly(run, desc):
         "duration_ms": duration_ms,
         "output_preview": _bounded(combined, CC_MAX_OUTPUT_CHARS),
         "report_path": report_path,
-        "command_summary": "claude --print --permission-mode plan --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,...",
+        "command_summary": "claude --print --permission-mode plan --allowedTools Read,Grep,Glob --disallowedTools Bash,Edit,Write,...",
+    }
+
+
+def _worktree_clean():
+    if not _git_available():
+        return False, "当前目录不是 git 仓库，无法安全应用 Claude Code 本地改码。"
+    out, _, _ = _git(["status", "--porcelain"], timeout=10)
+    if out.strip():
+        return False, "仓库当前已有未提交改动；为避免覆盖，请先快照/提交/回滚到干净状态后再运行 L2 本地改码。"
+    return True, None
+
+
+def _changed_files_from_diff(diff_text):
+    files = []
+    for line in (diff_text or "").splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                name = parts[3][2:] if parts[3].startswith("b/") else parts[3]
+                files.append(name)
+    return files[:80]
+
+
+def _high_confidence_secret_hits(root_dir, paths=None):
+    """Small local high-confidence scan; never prints matched secrets, only file + pattern name.
+
+    If paths is provided, scan only changed files. Known fake/self-check markers are ignored.
+    """
+    patterns = [
+        ("OPENAI_OR_SK", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
+        ("GITHUB_PAT", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b")),
+        ("GITHUB_FINE_GRAINED_PAT", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+        ("TELEGRAM_BOT_TOKEN", re.compile(r"\b\d{6,}:[A-Za-z0-9_\-]{30,}\b")),
+        ("BEARER_TOKEN", re.compile(r"\bBearer\s+[A-Za-z0-9_\-.]{24,}\b", re.IGNORECASE)),
+    ]
+    fake_markers = ("FAKE", "NOT-A-REAL", "SELF_CHECK", "selfcheck")
+    skip_dirs = {".git", "__pycache__", "data", "node_modules", ".venv", "venv"}
+    hits = []
+    if paths:
+        candidates = [os.path.join(root_dir, p) for p in paths if p and not p.startswith("data/")]
+    else:
+        candidates = []
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for fn in filenames:
+                candidates.append(os.path.join(dirpath, fn))
+    for path in candidates:
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) > 2_000_000:
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            continue
+        rel = os.path.relpath(path, root_dir)
+        for line in lines:
+            if any(marker in line for marker in fake_markers):
+                continue
+            for name, pat in patterns:
+                if pat.search(line):
+                    hits.append({"file": rel, "pattern": name})
+                    break
+            if hits and hits[-1].get("file") == rel:
+                break
+    return hits[:50]
+
+
+def _run_py_compile_check(root_dir):
+    candidates = []
+    for rel in ("server.py", "scripts/self_check.py", "scripts/load_demo.py"):
+        if os.path.exists(os.path.join(root_dir, rel)):
+            candidates.append(rel)
+    if not candidates:
+        return {"ok": True, "output": "No Python entry files found."}
+    proc = subprocess.run(["python3", "-m", "py_compile"] + candidates, cwd=root_dir,
+                          text=True, capture_output=True, timeout=60)
+    return {"ok": proc.returncode == 0, "output": redact((proc.stdout + proc.stderr).strip())[:2000]}
+
+
+def prepare_cc_local_edit_run(state, payload):
+    desc = (payload.get("description") or "").strip()
+    if not desc:
+        return None, None, "请先写清楚要让 Claude Code 本地修改什么。"
+    if _looks_like_secret(desc):
+        return None, None, "任务描述里像是包含 API key / token。为安全起见，不会发送给外部 Claude Code。请删除凭证后再提交。"
+    if not payload.get("confirm_cost"):
+        return None, None, "真实 Claude Code L2 本地改码会调用外部模型、可能产生费用并修改本仓库文件；请勾选费用/本地改动确认后再执行。"
+    if not claude_code_available():
+        return None, None, "本机找不到 claude CLI，无法真实执行 Claude Code worker。"
+    clean, err = _worktree_clean()
+    if not clean:
+        return None, None, err
+    run = {
+        "id": new_id("ccrun"),
+        "level": 2,
+        "label": "本地改码（不提交）",
+        "description": redact(desc),
+        "status": "运行中",
+        "created_at": now_iso(),
+        "started_at": now_iso(),
+        "finished_at": None,
+        "exit_code": None,
+        "duration_ms": None,
+        "output_preview": "",
+        "report_path": "",
+        "changed_files": [],
+        "patch_applied": False,
+        "safety_ref": "",
+        "safety_note": "L2 本地改码：在隔离 git worktree 中允许 Edit/Write；禁止 Bash/Web；通过 py_compile 与高置信秘密扫描后才把 patch 应用回本仓库；不 commit/PR/merge。",
+    }
+    state.setdefault("cc_runs", []).insert(0, run)
+    state["cc_runs"] = state["cc_runs"][:30]
+    log_event(state, f"Claude Code L2 本地改码开始：{desc[:60]}", kind="claude_code")
+    return run, desc, None
+
+
+def run_claude_code_local_edit(run, desc):
+    """Run Claude Code in an isolated git worktree, validate, then apply a patch to BASE_DIR."""
+    os.makedirs(CC_RUN_DIR, exist_ok=True)
+    os.makedirs(CC_WORKTREE_DIR, exist_ok=True)
+    started = time.time()
+    report_path = os.path.join(CC_RUN_DIR, f"{run['id']}.md")
+    worktree = os.path.join(CC_WORKTREE_DIR, run["id"])
+    status = "失败"
+    exit_code = 1
+    combined = ""
+    diff_text = ""
+    changed_files = []
+    checks = {}
+    safety = None
+    try:
+        safety = _create_tree_commit_ref(SAFETY_REF_PREFIX, f"before-cc-l2-{run['id']}")
+        _git(["worktree", "add", "--detach", worktree, "HEAD"], timeout=30)
+        prompt = (
+            "你是 LingTai Simple 的受控 Claude Code L2 本地改码 worker。\n"
+            "硬性规则：可以在当前隔离 worktree 内修改文件；不要执行 shell；不要访问网络；不要提交、开 PR 或 merge；"
+            "不要写入或输出任何凭证。若看到疑似秘密，只写 [REDACTED]。\n"
+            "修改要小而可审计，优先完成用户指定任务；完成后用中文摘要说明改了哪些文件、为何修改、如何验证。\n\n"
+            f"隔离工作目录：{worktree}\n"
+            f"任务：{desc}\n"
+        )
+        cmd = [
+            shutil.which("claude") or "claude",
+            "--print",
+            "--permission-mode", "acceptEdits",
+            "--allowedTools", "Read,Grep,Glob,Edit,Write",
+            "--disallowedTools", "Bash,NotebookEdit,WebFetch,WebSearch",
+            "--max-budget-usd", str(CC_MAX_BUDGET_USD),
+            "--no-session-persistence",
+            "--add-dir", worktree,
+            prompt,
+        ]
+        env = os.environ.copy()
+        env.setdefault("CLAUDE_CODE_SIMPLE", "1")
+        proc = subprocess.run(cmd, cwd=worktree, env=env, capture_output=True, text=True,
+                              timeout=CC_RUN_TIMEOUT)
+        stdout = redact(proc.stdout or "")
+        stderr = redact(proc.stderr or "")
+        exit_code = proc.returncode
+        combined = (stdout.strip() + ("\n\n[stderr]\n" + stderr.strip() if stderr.strip() else "")).strip()
+        if exit_code != 0:
+            status = "失败"
+        else:
+            # include untracked files in the patch
+            subprocess.run(["git", "add", "-N", "--", "."], cwd=worktree, text=True,
+                           capture_output=True, timeout=20)
+            dproc = subprocess.run(["git", "diff", "--binary", "--", "."], cwd=worktree,
+                                   text=True, capture_output=True, timeout=30)
+            raw_diff = dproc.stdout or ""
+            diff_text = raw_diff
+            changed_files = _changed_files_from_diff(raw_diff)
+            if not raw_diff.strip():
+                status = "无改动"
+            elif len(raw_diff) > 240_000:
+                status = "失败"
+                combined += "\n\n[guard] diff 过大，已拒绝自动应用。"
+            else:
+                checks["py_compile"] = _run_py_compile_check(worktree)
+                checks["secret_hits"] = _high_confidence_secret_hits(worktree, changed_files)
+                if not checks["py_compile"].get("ok"):
+                    status = "校验失败"
+                    combined += "\n\n[guard] py_compile 未通过，patch 未应用。"
+                elif checks["secret_hits"]:
+                    status = "校验失败"
+                    combined += "\n\n[guard] 高置信秘密扫描发现疑似凭证，patch 未应用。"
+                else:
+                    apply_proc = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"],
+                                                cwd=BASE_DIR, input=raw_diff, text=True,
+                                                capture_output=True, timeout=30)
+                    if apply_proc.returncode != 0:
+                        status = "应用失败"
+                        combined += "\n\n[git apply]\n" + redact((apply_proc.stdout + apply_proc.stderr).strip())
+                    else:
+                        status = "完成"
+        if not combined:
+            combined = "（Claude Code 没有返回可显示内容。）"
+    except subprocess.TimeoutExpired as e:
+        status = "超时"
+        exit_code = 124
+        combined = redact((e.stdout or "") if isinstance(e.stdout, str) else "")
+        combined += f"\nTIMEOUT after {CC_RUN_TIMEOUT}s"
+    except Exception as e:
+        status = "失败"
+        combined = redact(str(e))
+    finally:
+        try:
+            _git(["worktree", "remove", "--force", worktree], timeout=30, check=False)
+        except Exception:
+            pass
+    duration_ms = int((time.time() - started) * 1000)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("# Claude Code L2 本地改码报告\n\n")
+        f.write(f"- run_id: `{run['id']}`\n- status: {status}\n- exit_code: {exit_code}\n")
+        f.write(f"- duration_ms: {duration_ms}\n- created_at: {run.get('created_at')}\n")
+        f.write(f"- safety_ref: `{safety.get('ref') if safety else ''}`\n")
+        f.write("- safety: isolated git worktree; Bash/Web disabled; py_compile + high-confidence secret scan before applying patch; no commit/PR/merge.\n\n")
+        f.write("## Task\n\n" + redact(desc) + "\n\n")
+        f.write("## Changed files\n\n")
+        if changed_files:
+            for name in changed_files:
+                f.write(f"- `{name}`\n")
+        else:
+            f.write("- （无）\n")
+        f.write("\n## Checks\n\n```json\n" + json.dumps(checks, ensure_ascii=False, indent=2) + "\n```\n\n")
+        f.write("## Claude output\n\n" + combined + "\n\n")
+        if diff_text:
+            f.write("## Diff preview\n\n```diff\n" + _bounded(redact(diff_text), 20000) + "\n```\n")
+    return {
+        "status": status,
+        "finished_at": now_iso(),
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "output_preview": _bounded(combined, CC_MAX_OUTPUT_CHARS),
+        "report_path": report_path,
+        "changed_files": changed_files,
+        "diff_preview": _bounded(redact(diff_text), 6000),
+        "patch_applied": status == "完成",
+        "safety_ref": safety.get("ref") if safety else "",
+        "checks": checks,
     }
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.6 真实接入 L1 只读分析；L2+ 仍仅进入确认队列，尚无真实执行器。"""
+    """Claude Code 苦力卡：v0.7 真实接入 L1 只读分析与 L2 本地改码；L3+ 仍进入确认队列。"""
     level = parse_level(payload.get("level"), 1)
     desc = (payload.get("description") or "").strip() or "（无描述）"
     meta = next((l for l in CC_PERMISSION_LEVELS if l["level"] == level), CC_PERMISSION_LEVELS[0])
     if level == 1:
-        # 真正执行由 Handler._handle_cc_request 在锁外完成；这里仅保底拒绝，避免老路由误把 L1 当 mock。
         return None, "Claude Code L1 只读分析已是真实外部调用；请通过专用处理器并勾选费用确认。"
-    action_map = {2: "code_commit", 3: "code_commit", 4: "code_pr", 5: "code_merge"}
+    if level == 2:
+        return None, "Claude Code L2 本地改码已是真实外部调用并会修改本仓库文件；请通过专用处理器并勾选费用/本地改动确认。"
+    action_map = {3: "code_commit", 4: "code_pr", 5: "code_merge"}
     action = action_map.get(level, "code_commit")
     ap = add_approval(state, {
         "action": action,
         "title": f"Claude Code 苦力：{meta['label']}（执行器未接入）",
-        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.6 只真实接入 L1 只读分析；本地改码/commit/PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已改码。",
-        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前仅 L1 只读分析可真实调用 Claude Code；L2+ 等后续接入受控 worktree、测试、扫描与 GitHub 确认闸。",
+        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.7 已真实接入 L1 只读分析与 L2 本地改码；commit/PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已提交或开 PR。",
+        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前 L1/L2 可真实调用 Claude Code；L3+ 等后续接入 commit、GitHub PR 与 merge 确认闸。",
     })
     return {"queued_approval": ap["id"], "level": level, "real_executor": False}, None
 
@@ -1446,10 +1687,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.6（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.7（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.6 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.7 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -1469,7 +1710,7 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.6",
+        "version": "v0.7",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -1480,7 +1721,8 @@ def health_check():
             "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
             "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
             "real Claude Code L1 read-only analysis worker (explicit cost confirmation required)",
-            "not connected yet: autonomous standalone WeChat poller, Claude Code local edits, commit/PR/merge",
+            "real Claude Code L2 local-edit worker: isolated worktree, validation, patch apply to this repo; no commit/PR/merge",
+            "not connected yet: autonomous standalone WeChat poller, Claude Code commit/PR/merge",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1627,9 +1869,9 @@ class Handler(BaseHTTPRequestHandler):
                                     "state": self._public_state(state)})
 
     def _handle_cc_request(self, payload):
-        """真实 Claude Code L1 只读分析：锁内登记 → 锁外执行 → 锁内落盘。"""
+        """真实 Claude Code worker：L1 只读分析；L2 本地改码；L3+ 仍只进确认队列。"""
         level = parse_level(payload.get("level"), 1)
-        if level != 1:
+        if level not in (1, 2):
             with _LOCK:
                 state = load_state()
                 result, err = request_cc_task(state, payload)
@@ -1640,12 +1882,15 @@ class Handler(BaseHTTPRequestHandler):
 
         with _LOCK:
             state = load_state()
-            run, desc, err = prepare_cc_readonly_run(state, payload)
+            if level == 1:
+                run, desc, err = prepare_cc_readonly_run(state, payload)
+            else:
+                run, desc, err = prepare_cc_local_edit_run(state, payload)
             if err:
                 return self._send_json({"ok": False, "error": err}, 400)
             save_state(state)
 
-        update = run_claude_code_readonly(run, desc)
+        update = run_claude_code_readonly(run, desc) if level == 1 else run_claude_code_local_edit(run, desc)
 
         with _LOCK:
             state = load_state()
@@ -1655,9 +1900,10 @@ class Handler(BaseHTTPRequestHandler):
                 target = run
                 runs.insert(0, target)
             target.update(update)
-            log_event(state, f"Claude Code 只读分析{update['status']}：{run['id']}（{update['duration_ms']}ms）", kind="claude_code")
+            label = "只读分析" if level == 1 else "L2 本地改码"
+            log_event(state, f"Claude Code {label}{update['status']}：{run['id']}（{update['duration_ms']}ms）", kind="claude_code")
             save_state(state)
-            ok = update["status"] == "完成"
+            ok = update["status"] in ("完成", "无改动")
             resp = {"ok": ok, "result": target, "state": self._public_state(state)}
             return self._send_json(resp, 200 if ok else 400)
 
@@ -1762,7 +2008,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.6 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.7 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

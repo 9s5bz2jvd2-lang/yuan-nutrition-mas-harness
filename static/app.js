@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.6 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.7 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -431,7 +431,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.6 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.7 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -448,12 +448,12 @@ function openCCModal() {
   const opts = CATALOG.cc_levels.map(l =>
     `<option value="${l.level}">${l.level} · ${esc(l.label)}${l.needs_approval ? "（需确认）" : "（可直接）"}</option>`).join("");
   openModal("🛠️ Claude Code 苦力", `
-    <div class="preview">L1 会真实调用本机 Claude Code 只读分析（可能产生费用，需勾选确认）；仅允许 Read/Grep/Glob，不允许改文件。L2+ 改码/commit/PR/merge 仍只进确认队列，尚未接入真实执行器。</div>
+    <div class="preview">L1 会真实调用本机 Claude Code 只读分析（Read/Grep/Glob）；L2 会在隔离 git worktree 中真实本地改码，验证通过后把 patch 应用回本仓库；两者都可能产生费用且需勾选确认。L3+ commit/PR/merge 仍只进确认队列，尚未接入真实执行器。</div>
     <label>权限等级</label>
     <select id="cc-level">${opts}</select>
     <label>代码任务描述</label>
     <textarea id="cc-desc" placeholder="例如：只读分析仓库结构 / 找 README 中还像 AI 的段落"></textarea>
-    <label class="checkline"><input type="checkbox" id="cc-confirm-cost" /> 我确认 L1 只读分析会真实调用 Claude Code，可能产生费用；不把凭证写进任务描述。</label>
+    <label class="checkline"><input type="checkbox" id="cc-confirm-cost" /> 我确认 L1/L2 会真实调用 Claude Code，可能产生费用；L2 可能修改本仓库文件；不把凭证写进任务描述。</label>
     <button class="btn primary" onclick="submitCC()">派代码苦力</button>
   `);
 }
@@ -465,7 +465,7 @@ async function submitCC() {
   });
   if (r.ok) {
     if (r.result.queued_approval) toast("已进确认队列（敏感代码动作）");
-    else toast(r.result.status === "完成" ? "Claude Code 只读分析已完成" : "Claude Code 请求已处理");
+    else toast(r.result.status === "完成" ? "Claude Code 运行已完成" : "Claude Code 请求已处理");
     closeModal(); render();
   } else toast(r.error || "失败");
 }
@@ -549,12 +549,12 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.6 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；L1 Claude Code 只读分析已接入；commit / PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.7 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析与 L2 本地改码已接入；commit / PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
       <li>点「新建一个灵」创建子灵；用「本地记录任务」「微信入口任务」体验编排。</li>
-      <li>敏感动作进入「确认队列」，先预览；rollback 和 Claude Code L1 只读分析已是真实链路，改码/PR/merge 仍未接入。</li>
+      <li>敏感动作进入「确认队列」，先预览；rollback、Claude Code L1 只读分析、L2 本地改码已是真实链路；commit/PR/merge 仍未接入。</li>
       <li>点「一键收功」生成可返回的阶段小结。</li>
     </ol>
     <div class="preview">Mac 双击启动：运行目录里的「启动圆酱灵台.command」。</div>

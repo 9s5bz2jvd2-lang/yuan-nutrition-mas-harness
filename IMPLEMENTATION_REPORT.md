@@ -1,82 +1,68 @@
-# LingTai Simple v0.6 Implementation Report
+# LingTai Simple v0.7 Implementation Report
 
 ## Summary
 
-v0.6 adds a real **Claude Code L1 read-only analysis worker** on top of v0.5's real Keychain vault, model API test, git Time Machine / rollback, and WeChat bridge endpoint.
+v0.7 adds a real **Claude Code L2 local-edit worker** on top of v0.6's real Keychain vault, model API test, git Time Machine / rollback, WeChat bridge endpoint, and Claude Code L1 read-only analysis worker.
 
-It is intentionally narrow: L1 can call the local `claude` CLI for read-only analysis only after explicit cost confirmation. L2+ editing, commit, PR, and merge remain not connected and are honestly routed to the confirmation queue as local records only.
+The new L2 path is intentionally narrow: it can modify local files, but it cannot commit, open PRs, or merge. Those remain confirmation-queue records until separate real executors are implemented.
 
-## What changed
+## Backend changes
 
-### Backend (`server.py`)
+- Version metadata updated to v0.7.
+- Added `CC_WORKTREE_DIR` under the system temp directory.
+- `/api/cc/request` now handles:
+  - `level=1`: real Claude Code read-only analysis.
+  - `level=2`: real Claude Code local edit.
+  - `level>=3`: confirmation queue only, `real_executor=false`.
+- L2 local edit flow:
+  1. Reject empty tasks, suspected secrets, missing cost/local-change confirmation, missing `claude`, or dirty main worktree.
+  2. Create a safety git ref before running.
+  3. Create an isolated detached git worktree.
+  4. Run `claude --print` with `--permission-mode acceptEdits`.
+  5. Allow only `Read,Grep,Glob,Edit,Write`; disallow `Bash,NotebookEdit,WebFetch,WebSearch`.
+  6. Convert worktree changes to a binary patch.
+  7. Run `python3 -m py_compile` on main Python entry files.
+  8. Run a high-confidence secret scan without printing matched secrets.
+  9. Apply the patch to the main repo only if validation passes.
+  10. Write a report under `data/cc_runs/<run_id>.md` with changed files, checks, output, and diff preview.
 
-- Version metadata updated to v0.6.
-- Added `cc_runs` state and `data/cc_runs/` report output.
-- Added Claude Code availability to health check.
-- Added `POST /api/cc/request` special handler:
-  - `level=1` + `confirm_cost=true` starts a real Claude Code read-only run.
-  - `level=1` without confirmation is rejected before any external call.
-  - task descriptions that look like API keys/tokens are rejected.
-  - `level>=2` goes to confirmation queue and is marked as no real executor yet.
-- Real Claude Code command is constrained:
-  - `claude --print`
-  - `--permission-mode plan`
-  - `--tools Read,Grep,Glob`
-  - `--disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch`
-  - `--max-budget-usd` defaults to `0.50` via `LINGTAI_SIMPLE_CC_MAX_BUDGET_USD`.
-  - `--no-session-persistence`
-- Output is redacted, written to `data/cc_runs/<run_id>.md`, and surfaced in public state.
+## Frontend changes
 
-### Frontend (`static/index.html`, `static/app.js`)
+- Updated version and labels to v0.7.
+- Claude Code button now says L1/L2 are real.
+- Claude modal explains:
+  - L1 is read-only analysis.
+  - L2 uses an isolated git worktree and may modify repo files.
+  - L3+ commit/PR/merge still only enter the confirmation queue.
+- Run history displays changed files, report path, output preview, and run status through existing `cc_runs` state.
 
-- Updated to v0.6 wording.
-- WeChat button is no longer greyed as fake: it opens the bridge-test modal, while clearly saying real operation still uses current LingTai WeChat MCP as the only bridge.
-- Claude Code button is enabled for L1 read-only analysis.
-- The Claude modal now includes a cost confirmation checkbox.
-- Added Claude Code run history / preview section.
-- UI wording states that edit/commit/PR/merge are not connected yet.
+## Docs and safety
 
-### Self-check (`scripts/self_check.py`)
+- README now documents exact L1 and L2 usage.
+- `.gitignore` includes runtime Claude Code reports; temporary L2 worktrees are created under the system temp directory.
+- L2 does not store or print secrets, and refuses task descriptions that look like credentials.
+- L2 does not start a shell through Claude; Bash is explicitly disallowed.
+- L2 does not commit, PR, or merge.
 
-- Updated to v0.6.
-- Confirms `/api/health` reports v0.6 and Claude CLI availability field exists.
-- Confirms model API still refuses to call without cost confirmation.
-- Confirms Claude Code L1 refuses to call without cost confirmation.
-- Confirms Claude Code L2+ queues an approval with `real_executor=false`.
-- Confirms WeChat bridge status/outbox flow still works.
-- Confirms fake API key never appears in `state.json`.
+## Validation performed
 
-### Git ignore
-
-- Added `data/cc_runs/` so generated Claude Code reports are local runtime artifacts, not committed.
-
-## Validation
-
-```text
+```bash
 python3 -m py_compile server.py scripts/self_check.py scripts/load_demo.py
 python3 scripts/self_check.py
 ```
 
-Result:
+Expected self-check output:
 
 ```text
-OK LingTai Simple v0.6 self-check passed
+OK LingTai Simple v0.7 self-check passed
 ```
 
-High-confidence secret scan should be run before push; no real API key or token is expected in tracked files.
+Self-check does not burn external Claude Code tokens. It validates that L1/L2 reject without confirmation and that L3+ still routes to confirmation only.
 
-## Honest boundaries
+## Remaining work
 
-- L1 read-only analysis is a real Claude Code call, but self-check does not burn tokens by default.
-- L1 is still an external model call and may cost money; UI/API require explicit confirmation.
-- L1 is constrained by CLI flags, but the strongest guarantee comes from keeping it read-only and reviewing output; it is not a sandbox for untrusted code execution.
-- L2+ editing/commit/PR/merge is not connected yet.
-- WeChat is bridge-based; this service does not run a second poller or store WeChat credentials.
-- Rollback only affects this repository's git-tracked/unignored files and cannot undo external side effects.
-
-## Next implementation slice
-
-1. Controlled Claude Code L2 local-edit worker in an isolated worktree.
-2. Mandatory diff preview + secret scan + test summary before any commit.
-3. Commit/PR/merge confirmation gates using Runyuan's GitHub identity.
-4. Persistent WeChat bridge runner/skill so current LingTai automatically relays messages to LingTai Simple.
+1. Real L3 commit executor with diff preview, author identity control, and confirmation gate.
+2. Real PR creation executor using 圆酱 GitHub identity and secret-safe token handling.
+3. Real merge executor with explicit WeChat/UI confirmation.
+4. Persistent WeChat bridge runner using the existing LingTai WeChat MCP as the only poller.
+5. Full LingTai runtime / skills / memory integration.
