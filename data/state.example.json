@@ -1,9 +1,9 @@
 {
   "meta": {
-    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.4",
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.5",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
-    "created_at": "2026-06-05T04:44:47-07:00",
+    "created_at": "2026-06-05T06:34:54-07:00",
     "max_agents": 5
   },
   "agents": [
@@ -15,7 +15,7 @@
       "model": "deepseek-chat",
       "cc_level": 1,
       "status": "待命",
-      "created_at": "2026-06-05T04:44:47-07:00",
+      "created_at": "2026-06-05T06:34:54-07:00",
       "recent_tasks": [],
       "context_base": 18,
       "context_pressure": 18
@@ -28,7 +28,7 @@
       "model": "gpt-4o",
       "cc_level": 2,
       "status": "正在干",
-      "created_at": "2026-06-05T04:44:47-07:00",
+      "created_at": "2026-06-05T06:34:54-07:00",
       "recent_tasks": [
         "task_demoaaaa"
       ],
@@ -53,14 +53,14 @@
       "in_keychain": true,
       "key_label": "圆酱-DS",
       "key_last4": "1234",
-      "updated_at": "2026-06-05T04:44:47-07:00"
+      "updated_at": "2026-06-05T06:34:54-07:00"
     }
   ],
   "wechat_inbox": [
     {
       "id": "wx_demo0001",
       "text": "让代码苦力看一下这个仓库，给我改个 README，但不要直接提交。",
-      "received_at": "2026-06-05T04:44:47-07:00",
+      "received_at": "2026-06-05T06:34:54-07:00",
       "ack": "已收到 ✅（mock）",
       "stages": [
         "已收到",
@@ -73,6 +73,12 @@
       "result": "涉及改码，已进入确认队列。"
     }
   ],
+  "wechat_outbox": [],
+  "wechat_bridge": {
+    "mode": "lingtai_mcp_bridge",
+    "status": "ready",
+    "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。"
+  },
   "snapshots": [],
   "log": []
 }

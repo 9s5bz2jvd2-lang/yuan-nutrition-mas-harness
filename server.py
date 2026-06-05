@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.4 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.5 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.4 主功能只承诺已经真实接入的能力：Keychain 密钥保险柜 + OpenAI-compatible 模型 API 调用 + git Time Machine / rollback。
-- 微信/邮件/Telegram 外发、Claude Code 执行、commit/PR/merge 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
+- v0.5 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口。
+- 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
+- Claude Code 执行、commit/PR/merge 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.4 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.5 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
 - git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
+- 微信桥接入口：当前 LingTai/WeChat MCP 可把真实微信消息 POST 到本服务，本服务写入任务/确认队列并返回可原路回复的 `reply_text`。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -53,7 +55,7 @@ MAX_AGENTS = 5  # 最多 5 个灵（v0 硬约束）
 SENSITIVE_ACTIONS = {
     "wechat_send", "email_send", "telegram_send",
     "code_commit", "code_pr", "code_merge",
-    "rollback_apply", "delete_agent", "file_delete", "high_cost_api",
+    "rollback_apply", "delete_agent", "file_delete", "high_cost_api", "sensitive_task",
 }
 
 # 供应商目录（OpenAI-compatible /chat/completions）。
@@ -413,7 +415,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.4",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.5",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -423,7 +425,13 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 模拟微信任务队列
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.5 支持真实桥接写入）
+        "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
+        "wechat_bridge": {
+            "mode": "lingtai_mcp_bridge",
+            "status": "ready",
+            "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
+        },
         "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
@@ -437,7 +445,7 @@ def load_state():
             return st
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return normalize_state(json.load(f))
         except (json.JSONDecodeError, OSError):
             # 损坏则重置（原型容错）
             st = default_state()
@@ -452,6 +460,24 @@ def save_state(state):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, STATE_PATH)
+
+
+def normalize_state(state):
+    """兼容旧版本 state.json：补齐 v0.5 新字段，避免升级后丢状态。"""
+    base = default_state()
+    state.setdefault("meta", base["meta"])
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.5"
+    state["meta"]["max_agents"] = MAX_AGENTS
+    state.setdefault("agents", [])
+    state.setdefault("tasks", [])
+    state.setdefault("approvals", [])
+    state.setdefault("providers", [])
+    state.setdefault("wechat_inbox", [])
+    state.setdefault("wechat_outbox", [])
+    state.setdefault("wechat_bridge", base["wechat_bridge"])
+    state.setdefault("snapshots", [])
+    state.setdefault("log", [])
+    return state
 
 
 def log_event(state, message, kind="info"):
@@ -663,7 +689,10 @@ def _apply_approved_action(state, ap):
         for t in state["tasks"]:
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
-                t["result"] = f"已确认并执行：{action}"
+                if action in ("wechat_send", "email_send", "telegram_send", "code_commit", "code_pr", "code_merge", "sensitive_task"):
+                    t["result"] = f"已确认：{action}；当前 v0.5 仅完成本地确认/记录，尚未接入该动作的真实执行器。"
+                else:
+                    t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
                 if ag:
                     ag["status"] = "待命"
@@ -846,6 +875,195 @@ def wechat_submit(state, payload):
     return item, None
 
 
+def _find_pending_approval(state, approval_id):
+    for ap in state.get("approvals", []):
+        if ap.get("id") == approval_id and ap.get("status") == "待确认":
+            return ap
+    return None
+
+
+def _wechat_outbox_add(state, *, inbound_id, user_id, reply_to_message_id, reply_text, status="ready_for_bridge"):
+    item = {
+        "id": new_id("wxout"),
+        "inbound_id": inbound_id,
+        "user_id": user_id,
+        "reply_to_message_id": reply_to_message_id,
+        "reply_text": redact(reply_text),
+        "status": status,  # ready_for_bridge / sent / failed
+        "created_at": now_iso(),
+        "transport": "lingtai_wechat_mcp_bridge",
+    }
+    state.setdefault("wechat_outbox", []).insert(0, item)
+    state["wechat_outbox"] = state["wechat_outbox"][:50]
+    return item
+
+
+def _bridge_status_text(state):
+    pending = [a for a in state.get("approvals", []) if a.get("status") == "待确认"]
+    active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
+    agents = state.get("agents", [])
+    lines = [
+        "圆酱，LingTai Simple v0.5 当前状态：",
+        f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
+        f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
+        "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
+    ]
+    if pending:
+        lines.append("\n待确认：")
+        for ap in pending[:5]:
+            lines.append(f"- {ap['id']}：{ap.get('title','')}（回复：确认 {ap['id']} / 拒绝 {ap['id']}）")
+    if state.get("tasks"):
+        lines.append("\n最近任务：")
+        for t in state["tasks"][:5]:
+            lines.append(f"- {t.get('status')}｜{t.get('agent_name','')}｜{t.get('description','')[:40]}")
+    return "\n".join(lines)
+
+
+def _bridge_rollback_list_text(state):
+    prev = rollback_preview(state)
+    if not prev.get("git_available"):
+        return "当前仓库 git 不可用，无法列 Time Machine 快照。"
+    snaps = prev.get("snapshots", [])[:8]
+    if not snaps:
+        return "当前还没有 Time Machine 快照。可以微信发：快照 我的标签"
+    lines = ["Time Machine 快照（可微信发：回滚 <id>，随后再确认）："]
+    for sp in snaps:
+        lines.append(f"- {sp.get('id')}｜{sp.get('short','')}｜{sp.get('created_at','')}｜{sp.get('label','')}")
+    if prev.get("dirty"):
+        lines.append("\n注意：当前工作区有未提交改动，回滚前会显示确认队列并创建 safety ref。")
+    return "\n".join(lines)
+
+
+def wechat_bridge_incoming(state, payload):
+    """真实微信桥接入口。
+
+    设计边界：本服务不直接启动 WeChat poller、也不持有微信凭证；由当前 LingTai agent 的
+    WeChat MCP 作为唯一收发桥，把真实收到的消息 POST 到这里，再把返回的 reply_text 原路
+    wechat.reply 回去。这样避免第二个 poller 抢消息，同时把 LingTai Simple 的任务/确认/rollback
+    状态真实落盘。
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return None, "微信桥接消息不能为空"
+    user_id = payload.get("user_id") or ""
+    message_id = payload.get("message_id") or payload.get("wechat_message_id") or ""
+    sender = payload.get("sender") or payload.get("sender_name") or "圆酱"
+    inbound_id = payload.get("inbound_id") or new_id("wxin")
+    lower = text.lower()
+
+    item = {
+        "id": inbound_id,
+        "text": redact(text),
+        "received_at": now_iso(),
+        "source": "real_wechat_bridge",
+        "user_id": user_id,
+        "message_id": message_id,
+        "sender": sender,
+        "ack": "已通过真实微信桥接收到 ✅",
+        "stages": ["真实微信收到", "写入 LingTai Simple"],
+        "status": "处理中",
+        "assignee": "主控桥接",
+        "result": None,
+    }
+    state.setdefault("wechat_inbox", []).insert(0, item)
+    state["wechat_inbox"] = state["wechat_inbox"][:50]
+    log_event(state, f"真实微信桥接收到：{text[:40]}", kind="wechat")
+
+    reply = None
+    # ---- Command routing ----
+    if lower in ("状态", "status", "/status", "状态一下"):
+        item["status"] = "完成"
+        item["stages"].append("状态已生成")
+        reply = _bridge_status_text(state)
+    elif lower.startswith(("确认 ", "approve ")):
+        approval_id = text.split(maxsplit=1)[1].strip()
+        ap, err = resolve_approval(state, approval_id, "approve")
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("确认队列处理完成" if not err else "确认失败")
+        reply = f"已确认并执行：{approval_id}" if not err else f"确认失败：{err}"
+        if ap and ap.get("result"):
+            reply += f"\n结果：{ap['result']}"
+    elif lower.startswith(("拒绝 ", "deny ")):
+        approval_id = text.split(maxsplit=1)[1].strip()
+        ap, err = resolve_approval(state, approval_id, "deny")
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("拒绝队列处理完成" if not err else "拒绝失败")
+        reply = f"已拒绝：{approval_id}" if not err else f"拒绝失败：{err}"
+    elif lower.startswith(("快照", "snapshot")):
+        label = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else "wechat-bridge"
+        snap, err = create_snapshot(state, {"label": label})
+        item["status"] = "完成" if not err else "卡住"
+        item["stages"].append("Time Machine 快照已创建" if not err else "快照失败")
+        reply = (f"已创建 Time Machine 快照：{snap['id']}\nref：{snap['ref']}"
+                 if not err else f"创建快照失败：{err}")
+    elif lower in ("回滚列表", "rollback list", "snapshots", "快照列表"):
+        item["status"] = "完成"
+        item["stages"].append("快照列表已生成")
+        reply = _bridge_rollback_list_text(state)
+    elif lower.startswith(("回滚 ", "rollback ")):
+        snapshot_id = text.split(maxsplit=1)[1].strip()
+        ap, err = request_rollback(state, snapshot_id)
+        item["status"] = "等确认" if not err else "卡住"
+        item["stages"].append("rollback 已进入确认队列" if not err else "rollback 请求失败")
+        reply = (f"已把 rollback 放入确认队列：{ap['id']}\n请核对后微信回复：确认 {ap['id']}\n边界：只能回滚本仓库 tracked/unignored 文件，不能撤回已发消息/API/PR 等外部副作用。"
+                 if not err else f"回滚请求失败：{err}")
+    elif lower.startswith(("收功", "shougong", "/shougong")):
+        sg = generate_shougong(state)
+        item["status"] = "完成"
+        item["stages"].append("收功单已生成")
+        reply = f"已生成收功单：{sg['path']}\n\n你可以先离屏休息；回来按收功单继续。"
+    else:
+        # 默认把真实微信消息落入任务队列；如无灵则自动创建主控灵，确保圆酱可直接微信开用。
+        target = None
+        for a in state.get("agents", []):
+            if a.get("status") in ("待命", "正在干"):
+                target = a
+                break
+        if not target:
+            target, _ = create_agent(state, {"name": "微信主控灵", "role": "长期助手", "provider_id": "", "model": "", "cc_level": 1})
+        sensitive = any(k in text for k in ("发", "提交", "commit", "merge", "PR", "pr", "回滚", "rollback", "删除", "push"))
+        task, err = assign_task(state, {
+            "agent_id": target["id"],
+            "description": text,
+            "source": "wechat_bridge",
+            "risk": "sensitive" if sensitive else "low",
+            "action_type": "sensitive_task" if sensitive else "local_task",
+        })
+        if err:
+            item["status"] = "卡住"
+            item["stages"].append("入队失败")
+            reply = f"收到，但入队失败：{err}"
+        elif task.get("status") == "等确认":
+            item["status"] = "等确认"
+            item["task_id"] = task["id"]
+            item["stages"].append("敏感任务进入确认队列")
+            reply = f"收到，已进入 LingTai Simple 任务队列，并因涉及敏感动作进入确认队列：{task.get('approval_id')}。\n请在确认队列核对，或微信回复：确认 {task.get('approval_id')} / 拒绝 {task.get('approval_id')}。"
+        else:
+            item["status"] = "完成"
+            item["task_id"] = task["id"]
+            item["stages"].append("任务已记录")
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.5 会真实记录/编排/确认；任意外发、commit、merge、rollback 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+
+    item["result"] = reply
+    out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
+                             reply_to_message_id=message_id, reply_text=reply)
+    return {"inbound": item, "outbox": out, "reply_text": reply, "should_reply": True}, None
+
+
+def wechat_bridge_mark_sent(state, payload):
+    outbox_id = payload.get("outbox_id") or payload.get("id")
+    sent_message_id = payload.get("sent_message_id") or payload.get("message_id")
+    for item in state.setdefault("wechat_outbox", []):
+        if item.get("id") == outbox_id:
+            item["status"] = "sent"
+            item["sent_at"] = now_iso()
+            if sent_message_id:
+                item["sent_message_id"] = str(sent_message_id)
+            log_event(state, f"微信桥接回复已标记发送：{outbox_id}", kind="wechat")
+            return item, None
+    return None, "找不到该微信 outbox 项"
+
+
 def generate_shougong(state):
     """生成 Markdown 收功单。"""
     done = [t for t in state["tasks"] if t["status"] == "完成"]
@@ -854,7 +1072,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.4（本地原型 / Keychain、模型 API、git Time Machine 已真实接入；微信 bot 与 Claude Code 仍在接入中）")
+    lines.append("> 圆酱专属轻量版灵台 v0.5（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口已真实接入；Claude Code 仍在接入中）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -1109,10 +1327,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.4（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.5（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.4 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.5 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -1131,7 +1349,7 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.4",
+        "version": "v0.5",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -1140,7 +1358,8 @@ def health_check():
             "localhost-only",
             "real model API calls require explicit UI action (may cost money)",
             "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
-            "not connected yet: WeChat/email/Telegram send, Claude Code execution, commit/PR/merge",
+            "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
+            "not connected yet: autonomous standalone WeChat poller, Claude Code execution, commit/PR/merge",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1298,6 +1517,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/provider/delete_key": lambda s, p: delete_provider_key(s, p),
             "/api/provider/check_key": lambda s, p: check_provider_key(s, p),
             "/api/wechat/submit": lambda s, p: wechat_submit(s, p),
+            "/api/wechat/bridge/incoming": lambda s, p: wechat_bridge_incoming(s, p),
+            "/api/wechat/bridge/mark_sent": lambda s, p: wechat_bridge_mark_sent(s, p),
             "/api/demo/load": lambda s, p: load_demo_state(s, p),
             "/api/shougong": lambda s, p: (generate_shougong(s), None),
             "/api/rollback/snapshot": lambda s, p: create_snapshot(s, p),
@@ -1324,7 +1545,9 @@ class Handler(BaseHTTPRequestHandler):
             "tasks": state["tasks"][:30],
             "approvals": state["approvals"][:30],
             "providers": safe_providers,
-            "wechat_inbox": state["wechat_inbox"][:20],
+            "wechat_inbox": state.get("wechat_inbox", [])[:30],
+            "wechat_outbox": state.get("wechat_outbox", [])[:30],
+            "wechat_bridge": state.get("wechat_bridge", {}),
             "snapshots": state["snapshots"],
             "log": state["log"][:40],
             "stats": {
@@ -1380,7 +1603,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.4 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.5 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

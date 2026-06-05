@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.5 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -126,8 +126,11 @@ function renderTasks() {
 
 function renderWechat() {
   const el = $("#wechat");
-  if (!STATE.wechat_inbox.length) { el.innerHTML = `<div class="empty">微信队列为空。试着在上面输入一条任务。</div>`; return; }
-  el.innerHTML = STATE.wechat_inbox.map(w => `
+  const inbox = STATE.wechat_inbox || [];
+  const outbox = STATE.wechat_outbox || [];
+  const bridge = STATE.wechat_bridge || {};
+  const bridgeBanner = `<div class="preview">桥接状态：${esc(bridge.status || "unknown")} · ${esc(bridge.note || "")}</div>`;
+  const inboxHtml = inbox.length ? inbox.map(w => `
     <div class="row">
       <div class="row-top">
         <span class="row-title">💬 ${esc(w.text)}</span>
@@ -136,9 +139,16 @@ function renderWechat() {
       <div class="row-sub">
         ${esc(w.ack)}<br>
         阶段：${(w.stages || []).map(esc).join(" → ")}<br>
-        承接：${esc(w.assignee)}${w.result ? "<br>回复（mock）：" + esc(w.result) : ""}
+        来源：${esc(w.source || "local")}${w.message_id ? " · 微信消息 " + esc(w.message_id) : ""}<br>
+        承接：${esc(w.assignee)}${w.result ? "<br>回复/桥接结果：" + esc(w.result) : ""}
       </div>
-    </div>`).join("");
+    </div>`).join("") : `<div class="empty">微信队列为空。真实运行时，圆酱微信消息会由当前 LingTai WeChat MCP 桥接写入这里。</div>`;
+  const outboxHtml = outbox.length ? `<h4>待原路回复 / 已回复</h4>` + outbox.map(o => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">↩ ${esc(o.reply_text || "")}</span>${statusTag(o.status || "ready_for_bridge")}</div>
+      <div class="row-sub">outbox：${esc(o.id)} · inbound：${esc(o.inbound_id || "")} · transport：${esc(o.transport || "")}</div>
+    </div>`).join("") : "";
+  el.innerHTML = bridgeBanner + inboxHtml + outboxHtml;
 }
 
 function renderApprovals() {
@@ -154,7 +164,7 @@ function renderApprovals() {
       <div class="preview">${esc(a.preview)}</div>
       ${a.status === "待确认" ? `
       <div class="row-actions">
-        <button class="btn ok small" onclick="approval('${a.id}','approve')">确认（mock 执行）</button>
+        <button class="btn ok small" onclick="approval('${a.id}','approve')">确认/执行</button>
         <button class="btn danger small" onclick="approval('${a.id}','deny')">拒绝</button>
       </div>` : ""}
     </div>`).join("");
@@ -227,7 +237,7 @@ async function agentAction(id, action) {
 
 async function approval(id, decision) {
   const r = await api(`/api/approval/${decision}`, { approval_id: id });
-  if (r.ok) toast(decision === "approve" ? "已确认（mock 执行）" : "已拒绝");
+  if (r.ok) toast(decision === "approve" ? "已确认/执行" : "已拒绝");
   else toast(r.error || "操作失败");
   render();
 }
@@ -283,7 +293,7 @@ function openTaskModal(presetAgentId) {
     <textarea id="tk-desc" placeholder="例如：读这个仓库的 README 并总结要点"></textarea>
     <label>风险等级</label>
     <select id="tk-risk">
-      <option value="low">普通（只读/本地，自动 mock 完成）</option>
+      <option value="low">普通（只读/本地记录，自动完成）</option>
       <option value="sensitive">敏感（外发/改码 — 进确认队列）</option>
     </select>
     <button class="btn primary" onclick="submitTask()">派活</button>
@@ -298,7 +308,7 @@ async function submitTask() {
     action_type: "wechat_send",
   });
   if (r.ok) {
-    toast(r.result && r.result.status === "等确认" ? "敏感任务已进确认队列" : "已派活并完成（mock）");
+    toast(r.result && r.result.status === "等确认" ? "敏感任务已进确认队列" : "已派活并完成本地记录");
     closeModal(); render();
   } else toast(r.error || "派活失败");
 }
@@ -403,17 +413,17 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 }
 
 function openWechatModal() {
-  openModal("💬 微信入口任务（模拟）", `
-    <div class="preview">不会真实收发微信。仅演示：ACK → 排队 → 执行 → 完成 / 敏感进确认队列。</div>
-    <label>模拟一条微信任务</label>
+  openModal("💬 微信入口任务 / 桥接测试", `
+    <div class="preview">v0.5 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
-    <button class="btn primary" onclick="submitWechatModal()">发到微信队列</button>
+    <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
   `);
 }
 async function submitWechatModal() {
   const text = $("#wx-modal-input").value;
   const r = await api("/api/wechat/submit", { text });
-  if (r.ok) { toast("微信任务已 ACK 并入队"); closeModal(); render(); }
+  if (r.ok) { toast("微信桥接任务已入队"); closeModal(); render(); }
   else toast(r.error || "提交失败");
 }
 
@@ -520,7 +530,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.4 — Time Machine 真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；外发 / commit / PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.5 — 微信桥接入口真实接入里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；commit / PR / merge 仍需下一阶段接入。本地 Python 服务只是其中一个组件，后续会加 GUI / Mac 应用外壳与真实 LingTai / Claude Code / 微信集成。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
@@ -558,7 +568,7 @@ function bind() {
     const text = $("#wx-input").value;
     if (!text.trim()) return toast("请输入微信任务");
     const r = await api("/api/wechat/submit", { text });
-    if (r.ok) { $("#wx-input").value = ""; toast("微信任务已 ACK 并入队"); render(); }
+    if (r.ok) { $("#wx-input").value = ""; toast("微信桥接任务已入队"); render(); }
     else toast(r.error || "失败");
   });
   $("#btn-reset").addEventListener("click", async () => {

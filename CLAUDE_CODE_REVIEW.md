@@ -27,7 +27,7 @@
 | 4 | 阅读 `server.py`（路由、状态、脱敏、确认队列、localhost 守卫） | ✅ 见 Findings |
 | 5 | 阅读 `static/index.html` / `styles.css`(略读) / `app.js`（前端副作用） | ✅ 仅同源相对 `fetch`，无外部端点 |
 | 6 | 外部副作用扫描：`urllib`/`requests`/`socket`/`smtplib`/`subprocess`/`Popen`/`fetch`/`webhook` 等 | ✅ 无真实外发；`server.py` 仅用 `urllib.parse`（不联网）；`self_check.py` 的 `urllib`/`subprocess` 仅打到 `127.0.0.1`；`app.js` 的 `fetch` 全为相对路径 |
-| 7 | 高置信度密钥扫描：`sk-`/`ghp_`/`xox*`/`AKIA`/`BEGIN PRIVATE KEY`/`Bearer`/`password`/`secret`/Telegram bot token 模式 | ✅ 无命中（仅自检脚本中的**示例假 key** `sk-v0-2-secret-ABCDEFGH`，非真实凭证） |
+| 7 | 高置信度密钥扫描：`sk-`/`ghp_`/`xox*`/`AKIA`/`BEGIN PRIVATE KEY`/`Bearer`/`password`/`secret`/Telegram bot token 模式 | ✅ 无命中（仅自检脚本中的**示例假 key** `FAKE_KEY_PLACEHOLDER`，非真实凭证） |
 | 8 | 实测：保存带密钥的供应商 → 检查返回与落盘 | ✅ 返回仅 `configured=True` + `key_last4=ABCD`，**无 `api_key` 字段**；`state.json` 中 grep 真实密钥串命中 **0**（NO_PLAINTEXT_KEY_OK） |
 | 9 | 实测：敏感任务（含 `sk-...` 串）派发 | ✅ 任务进入「等确认」队列；任务描述中的密钥被脱敏（REDACTED） |
 | 10 | `.gitignore` 与生成产物核对（`git check-ignore`） | ✅ `data/state.json`、`data/shougong/`、`__pycache__/`、`*.pyc`、`*.log` 均被正确忽略；当前仓库中该目录暂无任何已跟踪文件 |
@@ -57,7 +57,7 @@
 2. **`request_cc_task` 内死代码**：`server.py:548–549` 的 `"file_delete" if False else "code_commit"` 与第 550 行 `action if level >= 3 else "code_commit"`（此处 `action` 已被覆盖）逻辑冗余、可读性差。功能正确（level 2→code_commit 入队），仅清理项。
 3. **`load_demo` 覆盖确认提示在前端**（`app.js:425`），后端 `/api/demo/load` 直接覆盖 `state.json`。原型可接受；前端已 `confirm`。
 4. **`state.json` 损坏即重置**（`server.py:167–171`）——原型容错，IMPLEMENTATION_REPORT 已列为已知限制。
-5. **`scripts/self_check.py` 含示例假 key** `sk-v0-2-secret-ABCDEFGH`（`scripts/self_check.py:26`）——是用于验证「不落盘明文」的测试夹具，**非真实凭证**，无需处理，但留意它会被 redact 正则覆盖到，属预期。
+5. **`scripts/self_check.py` 含示例假 key** `FAKE_KEY_PLACEHOLDER`（`scripts/self_check.py:26`）——是用于验证「不落盘明文」的测试夹具，**非真实凭证**，无需处理，但留意它会被 redact 正则覆盖到，属预期。
 
 ---
 

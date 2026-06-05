@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.4 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.5 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -44,7 +44,7 @@ def main():
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.4', health
+        assert health['version']=='v0.5', health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
         assert len(catalog['providers'])>=6 and catalog['max_agents']==5
@@ -107,8 +107,20 @@ def main():
         assert rb['ok'] and rb['result']['action']=='rollback_apply' and rb['result'].get('rollback_ref'), rb
 
         # 再次确认：任何写盘后 state.json 仍无假 key
+        # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
+        wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
+        assert wx['ok'] and wx['result']['should_reply'] is True, wx
+        assert 'LingTai Simple v0.5' in wx['result']['reply_text'], wx
+        out_id=wx['result']['outbox']['id']
+        sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
+        assert sent['ok'] and sent['result']['status']=='sent', sent
+        wx2=req('/api/wechat/bridge/incoming', {'text':'请帮我记录一个普通任务','user_id':'wx_selfcheck','message_id':'msg_selfcheck_task','sender':'圆酱'})
+        assert wx2['ok'] and '任务队列' in wx2['result']['reply_text'], wx2
+        st=req('/api/state')
+        assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
+
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.4 self-check passed')
+        print('OK LingTai Simple v0.5 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
