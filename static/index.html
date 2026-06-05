@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>圆酱专属轻量版灵台 · LingTai Simple v0.2</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">灵</span>
+      <div class="brand-text">
+        <h1>圆酱专属轻量版灵台</h1>
+        <p>LingTai Simple v0.2 · 本地原型 · 默认只读 · 敏感需确认</p>
+      </div>
+    </div>
+    <div class="badges">
+      <span class="badge safe">🔒 localhost-only</span>
+      <span class="badge warn">🧪 全部执行为 mock</span>
+      <span class="badge" id="stat-agents">灵 0 / 5</span>
+      <span class="badge danger" id="stat-approvals">待确认 0</span>
+    </div>
+  </header>
+
+  <section class="quickstart card mini-card">
+    <div>
+      <h2>✨ v0.2 快速体验</h2>
+      <p class="hint">第一次打开可以先点「加载示例」，马上看到子灵、微信队列、确认队列和 Time Machine 的样子。</p>
+    </div>
+    <div class="quick-actions">
+      <button class="btn primary" data-act="load-demo">加载示例状态</button>
+      <button class="btn" data-act="health">健康检查</button>
+      <button class="btn" data-act="open-docs">怎么看这个原型</button>
+    </div>
+  </section>
+
+  <!-- 大按钮区 -->
+  <section class="bigbuttons">
+    <button class="bigbtn" data-act="new-agent">
+      <span class="bb-icon">🌱</span><span class="bb-label">新建一个灵</span>
+    </button>
+    <button class="bigbtn" data-act="assign-task">
+      <span class="bb-icon">📨</span><span class="bb-label">给灵派任务</span>
+    </button>
+    <button class="bigbtn" data-act="wechat">
+      <span class="bb-icon">💬</span><span class="bb-label">微信入口任务</span>
+    </button>
+    <button class="bigbtn" data-act="models">
+      <span class="bb-icon">🧠</span><span class="bb-label">模型 / API 中心</span>
+    </button>
+    <button class="bigbtn" data-act="cc">
+      <span class="bb-icon">🛠️</span><span class="bb-label">Claude Code 苦力</span>
+    </button>
+    <button class="bigbtn highlight" data-act="approvals">
+      <span class="bb-icon">✅</span><span class="bb-label">确认队列</span>
+    </button>
+    <button class="bigbtn" data-act="shougong">
+      <span class="bb-icon">📋</span><span class="bb-label">一键收功</span>
+    </button>
+    <button class="bigbtn" data-act="rollback">
+      <span class="bb-icon">⏪</span><span class="bb-label">时间机器 / 回退</span>
+    </button>
+  </section>
+
+  <main class="grid">
+    <!-- 灵状态卡 -->
+    <section class="card">
+      <h2>🧩 我的灵（agent 状态卡）</h2>
+      <p class="hint">最多 5 个。状态：待命 / 正在干 / 卡住 / 等确认 / 已暂停。</p>
+      <div id="agents" class="agent-list"></div>
+    </section>
+
+    <!-- 任务停车场 -->
+    <section class="card">
+      <h2>🅿️ 任务停车场</h2>
+      <p class="hint">所有任务的来源、承接灵、状态。</p>
+      <div id="tasks" class="list"></div>
+    </section>
+
+    <!-- 微信入口 -->
+    <section class="card">
+      <h2>💬 微信入口任务队列（模拟）</h2>
+      <p class="hint">输入一条「微信任务」→ 自动 ACK → 排队 → 执行 → 完成。敏感动作自动进确认队列。不会真实回微信。</p>
+      <div class="inline-form">
+        <input id="wx-input" type="text" placeholder="例如：让代码苦力改个 README，但不要提交" />
+        <button class="btn primary" id="wx-send">发到微信队列</button>
+      </div>
+      <div id="wechat" class="list"></div>
+    </section>
+
+    <!-- 确认队列 -->
+    <section class="card accent">
+      <h2>✅ 确认队列（敏感动作必须先预览）</h2>
+      <p class="hint">外发 / 改码 / commit / PR / merge / rollback / 删除 → 先预览再确认或拒绝。</p>
+      <div id="approvals" class="list"></div>
+    </section>
+
+    <!-- 模型 / API 中心 -->
+    <section class="card">
+      <h2>🧠 模型 / API 中心</h2>
+      <p class="hint">不回显明文 key，只显示「已配置 + 后四位」。</p>
+      <div id="providers" class="list"></div>
+      <button class="btn" data-act="models">配置供应商</button>
+    </section>
+
+    <!-- Claude Code 苦力 -->
+    <section class="card">
+      <h2>🛠️ Claude Code 苦力（权限分级）</h2>
+      <p class="hint">只读分析可直接跑；本地改码/commit/PR/merge 需确认，merge 必须显式确认。</p>
+      <div id="cc-levels" class="list"></div>
+      <button class="btn" data-act="cc">派一个代码苦力任务</button>
+    </section>
+
+    <!-- 上下文压力 & 日志 -->
+    <section class="card">
+      <h2>📊 context 压力 & 事件日志</h2>
+      <div id="pressure" class="pressure-list"></div>
+      <h3 class="sub">最近事件（已脱敏）</h3>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>圆酱专属 · 本地运行 · 不外发 · 不真实改码/PR/merge · key 不回显</span>
+    <button class="btn ghost small" data-act="load-demo">加载示例</button>
+    <button class="btn ghost small" data-act="health">健康检查</button>
+    <button class="btn ghost small" id="btn-reset">重置原型数据</button>
+  </footer>
+
+  <!-- 通用 Modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 id="modal-title">标题</h3>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

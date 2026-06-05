@@ -1,0 +1,84 @@
+{
+  "meta": {
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.2",
+    "owner": "圆酱 / Runyuan",
+    "localhost_only": true,
+    "created_at": "2026-06-05T04:04:56-07:00",
+    "max_agents": 5
+  },
+  "agents": [
+    {
+      "id": "agent_demo0001",
+      "name": "营养审稿灵",
+      "role": "长期助手",
+      "provider_id": "deepseek",
+      "model": "deepseek-chat",
+      "cc_level": 1,
+      "status": "待命",
+      "created_at": "2026-06-05T04:04:56-07:00",
+      "recent_tasks": [],
+      "context_base": 18,
+      "context_pressure": 18
+    },
+    {
+      "id": "agent_demo0002",
+      "name": "代码管家灵",
+      "role": "代码苦力",
+      "provider_id": "openai",
+      "model": "gpt-4o",
+      "cc_level": 2,
+      "status": "正在干",
+      "created_at": "2026-06-05T04:04:56-07:00",
+      "recent_tasks": [
+        "task_demoaaaa"
+      ],
+      "context_base": 30,
+      "context_pressure": 44
+    }
+  ],
+  "tasks": [],
+  "approvals": [],
+  "providers": [
+    {
+      "provider_id": "deepseek",
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "tags": [
+        "chat",
+        "code",
+        "cheap"
+      ],
+      "configured": true,
+      "key_label": "圆酱-DS",
+      "key_last4": "1234",
+      "updated_at": "2026-06-05T04:04:56-07:00"
+    }
+  ],
+  "wechat_inbox": [
+    {
+      "id": "wx_demo0001",
+      "text": "让代码苦力看一下这个仓库，给我改个 README，但不要直接提交。",
+      "received_at": "2026-06-05T04:04:56-07:00",
+      "ack": "已收到 ✅（mock）",
+      "stages": [
+        "已收到",
+        "排队中",
+        "执行中",
+        "等确认（敏感动作）"
+      ],
+      "status": "等确认",
+      "assignee": "代码管家灵",
+      "result": "涉及改码，已进入确认队列。"
+    }
+  ],
+  "snapshots": [
+    {
+      "id": "snap_seed0001",
+      "created_at": "2026-06-05T04:04:56-07:00",
+      "label": "初始安全点（示例）",
+      "diff_preview": "(示例) 无改动 — 这是种子快照"
+    }
+  ],
+  "log": []
+}

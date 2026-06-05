@@ -1,0 +1,6 @@
+# 运行时生成的本地状态与产物（不应入库）
+__pycache__/
+*.pyc
+data/state.json
+data/shougong/
+*.log
