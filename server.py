@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.5 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.6 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.5 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口。
+- v0.6 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code 只读分析 worker。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
-- Claude Code 执行、commit/PR/merge 尚未真实接入；界面必须清楚标为“下一阶段/未接入”，不能伪装成已可用。
+- Claude Code 只读分析已真实接入（需显式确认可能产生费用）；本地改码、commit、PR、merge 尚未真实接入，仍必须进入确认队列且不得伪装成已完成。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.5 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.6 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
 - git Time Machine：创建安全快照、列快照、预览 diff，并在确认队列批准后执行真实 `git reset --hard` 回退。
 - 微信桥接入口：当前 LingTai/WeChat MCP 可把真实微信消息 POST 到本服务，本服务写入任务/确认队列并返回可原路回复的 `reply_text`。
+- Claude Code 只读分析 worker：显式确认费用后调用本机 `claude --print`，仅开放 Read/Grep/Glob 类只读工具，输出写入本地报告。
 
 Python 标准库 + macOS Security.framework（通过 ctypes 调用，无第三方依赖）。
 """
@@ -35,6 +36,7 @@ from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 import tempfile
+import time
 
 # --------------------------------------------------------------------------
 # 路径与常量
@@ -45,6 +47,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 STATE_PATH = os.path.join(DATA_DIR, "state.json")
 EXAMPLE_STATE_PATH = os.path.join(DATA_DIR, "state.example.json")
 SHOUGONG_DIR = os.path.join(DATA_DIR, "shougong")
+CC_RUN_DIR = os.path.join(DATA_DIR, "cc_runs")
 
 HOST = os.environ.get("LINGTAI_SIMPLE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LINGTAI_SIMPLE_PORT", "8765"))
@@ -96,6 +99,10 @@ CC_PERMISSION_LEVELS = [
     {"level": 4, "key": "pr", "label": "允许开 PR", "needs_approval": True},
     {"level": 5, "key": "merge", "label": "允许 merge（必须显式确认）", "needs_approval": True},
 ]
+CC_RUN_TIMEOUT = 240
+CC_MAX_OUTPUT_CHARS = 12000
+CC_MAX_BUDGET_USD = os.environ.get("LINGTAI_SIMPLE_CC_MAX_BUDGET_USD", "0.50")
+
 
 _LOCK = threading.RLock()
 
@@ -415,7 +422,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.5",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.6",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -425,13 +432,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.5 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.6 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
+        "cc_runs": [],          # Claude Code 只读分析运行记录（v0.6 真实接入 L1）
         "snapshots": [],         # 兼容旧字段；真实快照来自 git refs
         "log": [],
     }
@@ -463,10 +471,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.5 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.6 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.5"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.6"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -475,6 +483,7 @@ def normalize_state(state):
     state.setdefault("wechat_inbox", [])
     state.setdefault("wechat_outbox", [])
     state.setdefault("wechat_bridge", base["wechat_bridge"])
+    state.setdefault("cc_runs", [])
     state.setdefault("snapshots", [])
     state.setdefault("log", [])
     return state
@@ -690,7 +699,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "code_commit", "code_pr", "code_merge", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.5 仅完成本地确认/记录，尚未接入该动作的真实执行器。"
+                    t["result"] = f"已确认：{action}；当前 v0.6 对该动作仅完成本地确认/记录，尚未接入该动作的真实执行器。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -903,7 +912,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.5 当前状态：",
+        "圆酱，LingTai Simple v0.6 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1042,7 +1051,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.5 会真实记录/编排/确认；任意外发、commit、merge、rollback 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.6 会真实记录/编排/确认；rollback 与 Claude Code L1 只读分析已接入；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -1072,7 +1081,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.5（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口已真实接入；Claude Code 仍在接入中）")
+    lines.append("> 圆酱专属轻量版灵台 v0.6（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1 只读分析已真实接入；改码/commit/PR/merge 仍在接入中）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -1299,25 +1308,135 @@ def rollback_apply_real(state, ref):
     return result, None
 
 
+def _looks_like_secret(text):
+    """拒绝把疑似 key/token 送入外部 Claude Code。"""
+    if not isinstance(text, str):
+        return False
+    checks = [
+        re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}\b"),
+        re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{12,}\b", re.IGNORECASE),
+        re.compile(r"\bghp_[A-Za-z0-9_]{12,}\b"),
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]+\b"),
+        re.compile(r"\b\d{6,}:[A-Za-z0-9_\-]{20,}\b"),
+    ]
+    return any(p.search(text) for p in checks)
+
+
+def claude_code_available():
+    return shutil.which("claude") is not None
+
+
+def prepare_cc_readonly_run(state, payload):
+    desc = (payload.get("description") or "").strip()
+    if not desc:
+        return None, None, "请先写清楚要让 Claude Code 只读分析什么。"
+    if _looks_like_secret(desc):
+        return None, None, "任务描述里像是包含 API key / token。为安全起见，不会发送给外部 Claude Code。请删除凭证后再提交。"
+    if not payload.get("confirm_cost"):
+        return None, None, "真实 Claude Code 只读分析会调用外部模型，可能产生费用；请勾选费用确认后再执行。"
+    if not claude_code_available():
+        return None, None, "本机找不到 claude CLI，无法真实执行 Claude Code worker。"
+    run = {
+        "id": new_id("ccrun"),
+        "level": 1,
+        "label": "只读分析",
+        "description": redact(desc),
+        "status": "运行中",
+        "created_at": now_iso(),
+        "started_at": now_iso(),
+        "finished_at": None,
+        "exit_code": None,
+        "duration_ms": None,
+        "output_preview": "",
+        "report_path": "",
+        "safety_note": "只读分析：仅允许 Claude Code 使用 Read/Grep/Glob；不允许 Edit/Write/Bash；不会 commit/PR/merge。",
+    }
+    state.setdefault("cc_runs", []).insert(0, run)
+    state["cc_runs"] = state["cc_runs"][:30]
+    log_event(state, f"Claude Code 只读分析开始：{desc[:60]}", kind="claude_code")
+    return run, desc, None
+
+
+def run_claude_code_readonly(run, desc):
+    """锁外执行真实 Claude Code 只读分析；返回更新字段，不修改 state。"""
+    os.makedirs(CC_RUN_DIR, exist_ok=True)
+    started = time.time()
+    prompt = (
+        "你是 LingTai Simple 的受控 Claude Code 只读分析 worker。\n"
+        "硬性规则：只做阅读、搜索、分析和建议；不要修改文件；不要执行 shell；不要提交、开 PR 或 merge；"
+        "不要输出任何凭证或秘密。若看到疑似秘密，只写 [REDACTED]。\n\n"
+        f"工作目录：{BASE_DIR}\n"
+        f"任务：{desc}\n\n"
+        "请用中文输出：1) 结论摘要；2) 关键证据/文件；3) 建议下一步；4) 风险与边界。"
+    )
+    cmd = [
+        shutil.which("claude") or "claude",
+        "--print",
+        "--permission-mode", "plan",
+        "--tools", "Read,Grep,Glob",
+        "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+        "--max-budget-usd", str(CC_MAX_BUDGET_USD),
+        "--no-session-persistence",
+        "--add-dir", BASE_DIR,
+        prompt,
+    ]
+    env = os.environ.copy()
+    env.setdefault("CLAUDE_CODE_SIMPLE", "1")
+    try:
+        proc = subprocess.run(cmd, cwd=BASE_DIR, env=env, capture_output=True, text=True,
+                              timeout=CC_RUN_TIMEOUT)
+        stdout = redact(proc.stdout or "")
+        stderr = redact(proc.stderr or "")
+        status = "完成" if proc.returncode == 0 else "失败"
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        stdout = redact(e.stdout or "") if isinstance(e.stdout, str) else ""
+        stderr = redact(e.stderr or "") if isinstance(e.stderr, str) else ""
+        stderr = (stderr + f"\nTIMEOUT after {CC_RUN_TIMEOUT}s").strip()
+        status = "超时"
+        exit_code = 124
+    duration_ms = int((time.time() - started) * 1000)
+    combined = (stdout.strip() + ("\n\n[stderr]\n" + stderr.strip() if stderr.strip() else "")).strip()
+    if not combined:
+        combined = "（Claude Code 没有返回可显示内容。）"
+    report_path = os.path.join(CC_RUN_DIR, f"{run['id']}.md")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"# Claude Code 只读分析报告\n\n")
+        f.write(f"- run_id: `{run['id']}`\n- status: {status}\n- exit_code: {exit_code}\n")
+        f.write(f"- duration_ms: {duration_ms}\n- created_at: {run.get('created_at')}\n")
+        f.write(f"- safety: Read/Grep/Glob only; no Bash/Edit/Write; no commit/PR/merge.\n\n")
+        f.write("## Task\n\n")
+        f.write(redact(desc) + "\n\n")
+        f.write("## Output\n\n")
+        f.write(combined + "\n")
+    return {
+        "status": status,
+        "finished_at": now_iso(),
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "output_preview": _bounded(combined, CC_MAX_OUTPUT_CHARS),
+        "report_path": report_path,
+        "command_summary": "claude --print --permission-mode plan --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,...",
+    }
+
+
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：按权限等级，敏感等级进确认队列（merge 必须显式确认）。"""
+    """Claude Code 苦力卡：v0.6 真实接入 L1 只读分析；L2+ 仍仅进入确认队列，尚无真实执行器。"""
     level = parse_level(payload.get("level"), 1)
     desc = (payload.get("description") or "").strip() or "（无描述）"
     meta = next((l for l in CC_PERMISSION_LEVELS if l["level"] == level), CC_PERMISSION_LEVELS[0])
-    if not meta["needs_approval"]:
-        # 只读分析 → 直接 mock 完成
-        log_event(state, f"Claude Code（只读分析 mock）：{desc[:40]}")
-        return {"status": "完成", "mock_result": f"(mock 只读分析) 已分析：{desc[:60]}"}, None
+    if level == 1:
+        # 真正执行由 Handler._handle_cc_request 在锁外完成；这里仅保底拒绝，避免老路由误把 L1 当 mock。
+        return None, "Claude Code L1 只读分析已是真实外部调用；请通过专用处理器并勾选费用确认。"
     action_map = {2: "code_commit", 3: "code_commit", 4: "code_pr", 5: "code_merge"}
     action = action_map.get(level, "code_commit")
-    if level == 2:
-        action = "file_delete" if False else "code_commit"  # 本地改码归入需确认
     ap = add_approval(state, {
-        "action": action if level >= 3 else "code_commit",
-        "title": f"Claude Code 苦力：{meta['label']}",
-        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n（不会真实调用 Claude Code，不会真实改码/PR/merge）",
+        "action": action,
+        "title": f"Claude Code 苦力：{meta['label']}（执行器未接入）",
+        "detail": f"权限等级 {level}（{meta['label']}）\n任务：{desc}\n当前 v0.6 只真实接入 L1 只读分析；本地改码/commit/PR/merge 仍未接入真实执行器。确认后仅完成本地记录，不会假装已改码。",
+        "preview": f"[Claude Code {meta['label']} 预览 / 尚未真实执行]\n任务：{desc}\n\n当前仅 L1 只读分析可真实调用 Claude Code；L2+ 等后续接入受控 worktree、测试、扫描与 GitHub 确认闸。",
     })
-    return {"queued_approval": ap["id"], "level": level}, None
+    return {"queued_approval": ap["id"], "level": level, "real_executor": False}, None
 
 
 def load_demo_state(_state=None, _payload=None):
@@ -1327,10 +1446,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.5（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.6（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.5 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.6 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -1346,10 +1465,11 @@ def health_check():
         "state_dir": os.path.isdir(DATA_DIR),
         "shougong_dir": os.path.isdir(SHOUGONG_DIR) or True,
         "git_available": _git_available(),
+        "claude_code_available": claude_code_available(),
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.5",
+        "version": "v0.6",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -1359,7 +1479,8 @@ def health_check():
             "real model API calls require explicit UI action (may cost money)",
             "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
             "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
-            "not connected yet: autonomous standalone WeChat poller, Claude Code execution, commit/PR/merge",
+            "real Claude Code L1 read-only analysis worker (explicit cost confirmation required)",
+            "not connected yet: autonomous standalone WeChat poller, Claude Code local edits, commit/PR/merge",
             "no plaintext API key in JSON/logs/responses (Keychain-only)",
         ],
     }
@@ -1459,6 +1580,8 @@ class Handler(BaseHTTPRequestHandler):
         # 真实模型调用单独处理：网络请求（最长 30s）在锁外进行，避免阻塞 UI 轮询。
         if route == "/api/model/test":
             return self._handle_model_test(payload)
+        if route == "/api/cc/request":
+            return self._handle_cc_request(payload)
 
         with _LOCK:
             state = load_state()
@@ -1503,6 +1626,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": True, "result": result,
                                     "state": self._public_state(state)})
 
+    def _handle_cc_request(self, payload):
+        """真实 Claude Code L1 只读分析：锁内登记 → 锁外执行 → 锁内落盘。"""
+        level = parse_level(payload.get("level"), 1)
+        if level != 1:
+            with _LOCK:
+                state = load_state()
+                result, err = request_cc_task(state, payload)
+                if err:
+                    return self._send_json({"ok": False, "error": err}, 400)
+                save_state(state)
+                return self._send_json({"ok": True, "result": result, "state": self._public_state(state)})
+
+        with _LOCK:
+            state = load_state()
+            run, desc, err = prepare_cc_readonly_run(state, payload)
+            if err:
+                return self._send_json({"ok": False, "error": err}, 400)
+            save_state(state)
+
+        update = run_claude_code_readonly(run, desc)
+
+        with _LOCK:
+            state = load_state()
+            runs = state.setdefault("cc_runs", [])
+            target = next((r for r in runs if r.get("id") == run["id"]), None)
+            if target is None:
+                target = run
+                runs.insert(0, target)
+            target.update(update)
+            log_event(state, f"Claude Code 只读分析{update['status']}：{run['id']}（{update['duration_ms']}ms）", kind="claude_code")
+            save_state(state)
+            ok = update["status"] == "完成"
+            resp = {"ok": ok, "result": target, "state": self._public_state(state)}
+            return self._send_json(resp, 200 if ok else 400)
+
     def _post_routes(self):
         return {
             "/api/agent/create": lambda s, p: create_agent(s, p),
@@ -1523,7 +1681,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/shougong": lambda s, p: (generate_shougong(s), None),
             "/api/rollback/snapshot": lambda s, p: create_snapshot(s, p),
             "/api/rollback/request": lambda s, p: request_rollback(s, p.get("snapshot_id")),
-            "/api/cc/request": lambda s, p: request_cc_task(s, p),
             "/api/reset": lambda s, p: self._reset(s, p),
         }
 
@@ -1548,6 +1705,7 @@ class Handler(BaseHTTPRequestHandler):
             "wechat_inbox": state.get("wechat_inbox", [])[:30],
             "wechat_outbox": state.get("wechat_outbox", [])[:30],
             "wechat_bridge": state.get("wechat_bridge", {}),
+            "cc_runs": state.get("cc_runs", [])[:20],
             "snapshots": state["snapshots"],
             "log": state["log"][:40],
             "stats": {
@@ -1599,15 +1757,16 @@ def ensure_example_state():
 
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(CC_RUN_DIR, exist_ok=True)
     ensure_example_state()
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.5 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.6 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
-    print("  边界 : localhost-only / Keychain + 模型 API + git Time Machine 为真实能力 / 微信-CC 尚未接入")
+    print("  边界 : localhost-only / Keychain + 模型 API + git Time Machine + 微信桥接 + Claude Code L1 只读分析为真实能力 / 改码-PR-merge 尚未接入")
     print("  停止 : Ctrl+C")
     print("=" * 64)
     try:

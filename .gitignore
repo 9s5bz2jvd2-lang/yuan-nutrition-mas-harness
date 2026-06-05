@@ -4,3 +4,4 @@ __pycache__/
 data/state.json
 data/shougong/
 *.log
+data/cc_runs/
