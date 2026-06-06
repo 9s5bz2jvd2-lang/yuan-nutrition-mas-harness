@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.14 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.15 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -37,6 +37,21 @@ def main():
     have_security = shutil.which('security') is not None
     fake_network = pathlib.Path(tempfile.mkdtemp(prefix='lingtai-simple-selfcheck-network.'))
     (fake_network/'human'/'mailbox'/'outbox').mkdir(parents=True, exist_ok=True)
+    fake_agent_dir = fake_network/'mimo-2-5-pro'
+    (fake_agent_dir/'system'/'summaries').mkdir(parents=True, exist_ok=True)
+    (fake_agent_dir/'knowledge'/'selfcheck').mkdir(parents=True, exist_ok=True)
+    (fake_agent_dir/'.library'/'custom'/'selfcheck-skill').mkdir(parents=True, exist_ok=True)
+    (fake_network/'.library_shared'/'shared-selfcheck').mkdir(parents=True, exist_ok=True)
+    (fake_agent_dir/'.agent.json').write_text(json.dumps({'address':'mimo-2-5-pro','agent_name':'selfcheck-main','state':'idle'}, ensure_ascii=False), encoding='utf-8')
+    (fake_agent_dir/'.status.json').write_text(json.dumps({'state':'idle'}, ensure_ascii=False), encoding='utf-8')
+    (fake_agent_dir/'system'/'pad.md').write_text('# Selfcheck Pad\n\n真实记忆索引测试。\n', encoding='utf-8')
+    (fake_agent_dir/'system'/'lingtai.md').write_text('# Selfcheck Character\n', encoding='utf-8')
+    (fake_agent_dir/'system'/'summaries'/'molt_1.md').write_text('# Molt summary selfcheck\n', encoding='utf-8')
+    (fake_agent_dir/'knowledge'/'selfcheck'/'KNOWLEDGE.md').write_text('---\nname: selfcheck-knowledge\ndescription: selfcheck durable knowledge entry\n---\n\n# Selfcheck knowledge\n', encoding='utf-8')
+    (fake_agent_dir/'.library'/'custom'/'selfcheck-skill'/'SKILL.md').write_text('---\nname: selfcheck-skill\ndescription: selfcheck custom skill entry\n---\n\n# Selfcheck skill\n', encoding='utf-8')
+    (fake_network/'.library_shared'/'shared-selfcheck'/'SKILL.md').write_text('---\nname: shared-selfcheck\ndescription: shared selfcheck skill entry\n---\n\n# Shared selfcheck\n', encoding='utf-8')
+    (fake_agent_dir/'.secrets').mkdir(parents=True, exist_ok=True)
+    (fake_agent_dir/'.secrets'/'secret.txt').write_text('SHOULD_NOT_READ', encoding='utf-8')
     (fake_network/'worker-one').mkdir(parents=True, exist_ok=True)
     (fake_network/'worker-one'/'.agent.json').write_text(json.dumps({
         'address':'worker-one', 'agent_name':'Selfcheck Worker', 'state':'idle',
@@ -59,6 +74,7 @@ time.sleep(30)
     env = {**os.environ, 'LINGTAI_SIMPLE_PORT': str(PORT),
            'LINGTAI_SIMPLE_KEYCHAIN_SERVICE': KC_SERVICE,
            'LINGTAI_SIMPLE_NETWORK_DIR': str(fake_network),
+           'LINGTAI_SIMPLE_AGENT_DIR': str(fake_agent_dir),
            'LINGTAI_SIMPLE_MAIL_SENDER': 'human',
            'LINGTAI_SIMPLE_REPLY_INBOX': 'mimo-2-5-pro',
            'LINGTAI_SIMPLE_AGENT_CMD': str(fake_agent_cmd)}
@@ -69,9 +85,20 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.14', health
+        assert health['version']=='v0.15', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
+        boundaries=' '.join(health['boundaries'])
+        assert 'real WeChat command entry' in boundaries
+        assert 'durable-store index' in boundaries, health
+        mem=req('/api/lingtai/memory')
+        assert mem['ok'] and mem['counts']['pad'] >= 2 and mem['counts']['knowledge'] >= 1 and mem['counts']['skills'] >= 2, mem
+        scan=req('/api/lingtai/memory/scan', {})
+        assert scan['ok'] and scan['result']['counts']['knowledge'] >= 1, scan
+        pad_read=req('/api/lingtai/memory/read', {'path': str(fake_agent_dir/'system'/'pad.md'), 'max_chars': 2000})
+        assert pad_read['ok'] and '真实记忆索引测试' in pad_read['result']['content'], pad_read
+        forbidden=req('/api/lingtai/memory/read', {'path': str(fake_agent_dir/'.secrets'/'secret.txt')})
+        assert not forbidden['ok'] and ('允许' in (forbidden.get('error') or '') or '拒绝' in (forbidden.get('error') or '')), forbidden
         catalog=req('/api/catalog')
         assert len(catalog['providers'])>=6 and catalog['max_agents']==5
         assert 'keychain_available' in catalog
@@ -123,7 +150,7 @@ time.sleep(30)
 
         # ---- v0.14 真实 LingTai 内部邮箱派发：在隔离 fake .lingtai 网络中写 outbox，不碰真实邮箱 ----
         discovered=req('/api/lingtai/agents')
-        assert discovered['agents'] and discovered['agents'][0]['address']=='worker-one', discovered
+        assert any(a.get('address')=='worker-one' for a in discovered['agents']), discovered
         no_confirm=req('/api/lingtai/dispatch', {'task_id':low['result']['id'], 'address':'worker-one'})
         assert not no_confirm['ok'] and 'confirm_dispatch' in (no_confirm.get('error') or ''), no_confirm
         disp=req('/api/lingtai/dispatch', {'task_id':low['result']['id'], 'address':'worker-one', 'confirm_dispatch': True})
@@ -201,7 +228,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.14' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.15' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -245,7 +272,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.14 self-check passed')
+        print('OK LingTai Simple v0.15 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

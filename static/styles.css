@@ -229,3 +229,5 @@ hr.soft { border: none; border-top: 1px solid #d8e2ee; margin: 16px 0 4px; }
   filter: grayscale(0.25);
   box-shadow: none;
 }
+
+.codeblock { background: rgba(255,255,255,0.72); border: 1px solid rgba(117, 143, 166, 0.22); border-radius: 12px; padding: 12px; max-height: 420px; overflow: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.55; }

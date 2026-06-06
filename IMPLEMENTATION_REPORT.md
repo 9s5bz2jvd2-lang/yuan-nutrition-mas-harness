@@ -1,4 +1,31 @@
-# LingTai Simple v0.14 Implementation Report
+# LingTai Simple v0.15 Implementation Report
+
+## v0.15 Update — real LingTai memory / skill index
+
+v0.15 adds a read-only durable-store index for the current real LingTai agent. Simple can now show what the agent remembers and what reusable skills it has, without exposing secrets, mailboxes, logs, or arbitrary filesystem paths.
+
+New endpoints:
+
+- `GET /api/lingtai/memory` — scans whitelisted durable stores and returns counts plus metadata for pad, character, current projects, knowledge entries, custom/shared skills, and recent molt summaries.
+- `POST /api/lingtai/memory/scan` — records a scan summary into Simple state for the GUI runtime card.
+- `POST /api/lingtai/memory/read` — reads only allowed text files under the whitelisted durable-store roots, with truncation and hidden-file/path traversal rejection.
+
+New UI:
+
+- Adds a “记忆 / 技能索引” big button.
+- Adds a runtime card showing latest pad / knowledge / skill / molt-summary scan counts.
+- Adds modal rows that can open whitelisted memory/skill files in a bounded preview.
+
+Safety boundary:
+
+- Read-only; no writes to pad, knowledge, skills, or summaries.
+- Does not read `.secrets`, mailbox contents, logs, hidden files, or arbitrary paths.
+- Does not automatically send durable-store content to external model APIs.
+
+Validation added:
+
+- `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
+- Expected output: `OK LingTai Simple v0.15 self-check passed`.
 
 ## Summary
 
@@ -54,7 +81,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.14 self-check passed
+OK LingTai Simple v0.15 self-check passed
 ```
 
 ## Boundaries
