@@ -5,6 +5,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 let STATE = null;
 let CATALOG = null;
+let HARNESS_STATUS = null;
 
 // ---------- API ----------
 async function api(path, body) {
@@ -50,12 +51,62 @@ function statusTag(status) {
     "已暂停": "paused", "完成": "done", "已拒绝": "denied",
     "排队中": "busy", "执行中": "busy", "待确认": "waiting", "已确认": "done",
     "待派": "waiting", "已派发": "busy",
-    "queued_to_lingtai_outbox": "busy", "reply_received": "done", "routing": "busy", "awaiting_approval": "waiting", "dispatched": "busy", "collecting": "busy", "needs_human": "waiting", "stuck": "stuck", "failed": "danger", "completed": "done",
+    "queued_to_lingtai_outbox": "busy", "reply_received": "done", "routing": "busy", "awaiting_approval": "waiting", "dispatched": "busy", "collecting": "busy", "awaiting_side_effect_review": "waiting", "needs_human": "waiting", "stuck": "stuck", "failed": "danger", "completed": "done",
+    "pending": "waiting", "approved_for_bridge": "done", "denied": "denied", "rejected": "denied",
     "running": "busy", "timeout": "danger", "queued_subprocess": "busy", "queued_to_controller": "busy", "avatar_started": "done",
     "可用": "done", "不可用": "paused",
     "sleep_signal_written": "paused", "suspend_signal_written": "paused", "interrupt_signal_written": "waiting", "clear_signal_written": "waiting",
   };
   return `<span class="tag ${map[status] || "idle"}">${esc(status)}</span>`;
+}
+
+function jsArg(s) {
+  return "'" + String(s == null ? "" : s)
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, "&quot;")
+    .replace(/\n/g, "\\n") + "'";
+}
+function fmtAge(seconds) {
+  if (seconds == null || seconds === "") return "";
+  const n = Number(seconds);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 60) return `${Math.round(n)}s`;
+  if (n < 3600) return `${Math.round(n / 60)}m`;
+  if (n < 86400) return `${Math.round(n / 3600)}h`;
+  return `${Math.round(n / 86400)}d`;
+}
+function compactJson(value, max = 240) {
+  if (value == null || value === "") return "";
+  let text = "";
+  try { text = typeof value === "string" ? value : JSON.stringify(value); }
+  catch (_) { text = String(value); }
+  return text.length > max ? text.slice(0, max) + "…" : text;
+}
+function reviewsForRun(runId, reviews = (STATE && STATE.side_effect_reviews) || []) {
+  return (reviews || []).filter(r => r.harness_run_id === runId);
+}
+function latestReviewLine(runId, reviews) {
+  const r = reviewsForRun(runId, reviews)[0];
+  if (!r) return "";
+  return `<br>外部副作用回传确认：${statusTag(r.status || "pending")} · review ${esc(r.id)} · approval ${esc(r.approval_id || "")}`;
+}
+function harnessRunActions(r) {
+  const id = jsArg(r.id);
+  const attention = r.needs_attention || ["needs_human", "stuck", "failed"].includes(r.status);
+  const collect = `<button class="btn small" onclick="submitHarnessRecover(${id}, 'collect')">只读回收</button>`;
+  const retry = attention ? `<button class="btn small warn" onclick="openHarnessRetryModal(${id})">创建 retry 确认门</button>` : "";
+  const resolve = attention ? `<button class="btn small ok" onclick="openHarnessResolveModal(${id})">人工结案/更新</button>` : "";
+  return `<div class="row-actions">${collect}${retry}${resolve}</div>`;
+}
+function renderSideEffectReviews(limit = 5, reviews = (STATE && STATE.side_effect_reviews) || []) {
+  if (!reviews.length) return "";
+  return `<h4>外部副作用回传确认</h4>` + reviews.slice(0, limit).map(r => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">⚠ ${esc(r.id)} · harness ${esc(r.harness_run_id || "")}</span>${statusTag(r.status || "pending")}</div>
+      <div class="row-sub">worker ${esc(r.worker_request_id || "")} · approval ${esc(r.approval_id || "")} · ${esc(r.created_at || "")}<br>边界：${esc(r.boundary || "approval_required_before_wechat_outbox")}</div>
+      <div class="preview">外部副作用：${esc(compactJson(r.external_side_effects, 360))}<br>拟回传：${esc(compactJson(r.reply_text, 360))}</div>
+    </div>`).join("");
 }
 
 // ---------- Modal ----------
@@ -177,15 +228,19 @@ function renderHarness() {
   if (!el) return;
   const h = STATE.harness || {};
   const runs = STATE.harness_runs || [];
+  const reviews = STATE.side_effect_reviews || [];
   const protocol = h.protocol || ["intake", "route", "approval", "dispatch", "collect", "return"];
-  const banner = `<div class="preview">模式：${esc(h.mode || "lightweight_lingtai_harness")}<br>协议：${protocol.map(esc).join(" → ")}<br>${esc(h.note || "每条微信/GUI输入都会形成可审计 harness run。")}</div>
-    <div class="row-actions"><button class="btn small" onclick="openHarnessModal()">查看 harness runs</button></div>`;
+  const pendingReviews = reviews.filter(r => (r.status || "pending") === "pending").length;
+  const attentionRuns = runs.filter(r => r.needs_attention || ["needs_human", "stuck", "failed", "awaiting_side_effect_review"].includes(r.status)).length;
+  const banner = `<div class="preview">模式：${esc(h.mode || "lightweight_lingtai_harness")}<br>协议：${protocol.map(esc).join(" → ")}<br>${esc(h.note || "每条微信/GUI输入都会形成可审计 harness run。")}<br>需关注 run：${attentionRuns} · 外部副作用待确认：${pendingReviews}</div>
+    <div class="row-actions"><button class="btn small" onclick="openHarnessModal()">查看/处理 harness runs</button></div>`;
   const rows = runs.length ? runs.slice(0, 5).map(r => `
     <div class="row">
       <div class="row-top"><span class="row-title">🧭 ${esc(r.id)} · ${esc(r.route_type || "route")}</span>${statusTag(r.status || "routing")}</div>
-      <div class="row-sub">来源：${esc(r.source || "")} · 回传：${esc(r.return_channel || "")} · route ${esc(r.route_id || "")}<br>${esc(r.input || "")}</div>
+      <div class="row-sub">来源：${esc(r.source || "")} · 回传：${esc(r.return_channel || "")} · route ${esc(r.route_id || "")}<br>${esc(r.input || "")}${latestReviewLine(r.id)}${r.recommended_action ? "<br>建议：" + esc(r.recommended_action) : ""}</div>
+      ${harnessRunActions(r)}
     </div>`).join("") : `<div class="empty">还没有 harness run。微信/GUI 任务进入 Task Router 后会自动生成。</div>`;
-  el.innerHTML = banner + rows;
+  el.innerHTML = banner + rows + renderSideEffectReviews(3);
 }
 
 
@@ -1134,21 +1189,99 @@ async function readLingTaiMemory(path) {
 async function openHarnessModal() {
   const res = await fetch("/api/harness/status");
   const h = await res.json();
+  HARNESS_STATUS = h;
   const counts = h.counts || {};
   const protocol = h.harness?.protocol || [];
+  const sideReviews = h.side_effect_reviews || [];
   const rows = (h.recent_runs || []).map(r => `
     <div class="row">
       <div class="row-top"><span class="row-title">${esc(r.id)} · ${esc(r.route_type || "")}</span>${statusTag(r.status || "")}</div>
       <div class="row-desc"><b>输入：</b>${esc(r.input || "")}</div>
       <div class="row-desc"><b>来源/回传：</b>${esc(r.source || "")} → ${esc(r.return_channel || "")}</div>
       <div class="row-desc"><b>关联：</b>route ${esc(r.route_id || "")} · task ${esc(r.task_id || "")} · worker ${esc(r.worker_request_id || "")} · approval ${esc(r.approval_id || "")}</div>
+      <div class="row-desc"><b>Watchdog：</b>${r.needs_attention ? "需关注" : "正常"}${r.last_activity_age_seconds != null ? " · 距最近活动 " + esc(fmtAge(r.last_activity_age_seconds)) : ""}${r.recommended_action ? " · 建议：" + esc(r.recommended_action) : ""}</div>
       <div class="row-desc"><b>阶段：</b>${(r.stages || []).map(st => `${esc(st.name)}(${esc(st.status || "done")})`).join(" → ")}</div>
+      <div class="row-desc">${latestReviewLine(r.id, sideReviews) || ""}</div>
+      ${harnessRunActions(r)}
     </div>`).join("") || '<div class="empty">暂无 harness run。</div>';
   openModal("🧭 Harness Run Protocol", `
-    <div class="preview">版本：${esc(h.version || "")}<br>模式：${esc(h.harness?.mode || "")}<br>协议：${protocol.map(esc).join(" → ")}<br>总数 ${counts.total_runs || 0} · 活跃 ${counts.active_runs || 0} · 待确认 ${counts.awaiting_approval || 0} · 已完成 ${counts.completed || 0}</div>
-    <div class="preview"><b>Worker 回信合同：</b>${esc(h.worker_protocol?.required_reply || "")}</div>
+    <div class="preview">版本：${esc(h.version || "")}<br>模式：${esc(h.harness?.mode || "")}<br>协议：${protocol.map(esc).join(" → ")}<br>总数 ${counts.total_runs || 0} · 活跃 ${counts.active_runs || 0} · 待确认 ${counts.awaiting_approval || 0} · 外部副作用待确认 ${counts.pending_side_effect_reviews || 0} · 需关注 ${counts.needs_attention || 0} · stale dispatched ${counts.stale_dispatched || 0} · 已完成 ${counts.completed || 0}</div>
+    <div class="preview"><b>Worker 回信合同：</b>${esc(h.worker_protocol?.required_reply || "")}<br><b>恢复边界：</b>“只读回收”只扫描已有回信；“retry”只创建 worker_dispatch 确认门；“人工结案”只改本地审计状态，不发微信、不派发、不执行外部工具。</div>
+    ${renderSideEffectReviews(10, sideReviews)}
     ${rows}
   `);
+}
+
+async function submitHarnessRecover(runId, action, extra = {}) {
+  const r = await api('/api/harness/recover', { harness_run_id: runId, action, ...extra });
+  if (r.ok) {
+    toast(action === 'collect' ? `只读回收完成：${r.result.collected || 0} 条` : 'retry 确认门已创建');
+    closeModal();
+    render();
+  } else {
+    toast(r.error || 'harness recovery 失败');
+    render();
+  }
+}
+
+function openHarnessRetryModal(runId) {
+  const run = ((HARNESS_STATUS && HARNESS_STATUS.recent_runs) || (STATE && STATE.harness_runs) || []).find(r => r.id === runId) || {};
+  openModal('🧭 Harness retry 确认门', `
+    <div class="preview">只会创建新的 worker_dispatch approval；批准前不会写 mailbox、不会重发、不会调用外部工具。</div>
+    <label>Harness run</label>
+    <input id="hr-id" value="${esc(runId)}" disabled />
+    <label>Retry description</label>
+    <textarea id="hr-desc" rows="5">${esc(run.input || '')}</textarea>
+    <label>Reason / audit note</label>
+    <textarea id="hr-reason" rows="3" placeholder="为什么需要 retry；例如：watchdog stale，原 worker 未回信。"></textarea>
+    <button class="btn warn" onclick="submitHarnessRecover(${jsArg(runId)}, 'request_retry', { retry_description: document.getElementById('hr-desc').value, reason: document.getElementById('hr-reason').value })">创建 retry 确认门</button>
+  `);
+}
+
+function parseListField(id) {
+  const text = (document.getElementById(id)?.value || '').trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (_) {
+    return text.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  }
+}
+
+function openHarnessResolveModal(runId) {
+  const run = ((HARNESS_STATUS && HARNESS_STATUS.recent_runs) || (STATE && STATE.harness_runs) || []).find(r => r.id === runId) || {};
+  openModal('✅ 人工关闭 / 更新 harness run', `
+    <div class="preview">本操作只更新本地 harness / worker / task 审计状态；不会 approve、不会 dispatch、不会发微信、不会调用外部工具。</div>
+    <label>Harness run</label>
+    <input id="hres-id" value="${esc(runId)}" disabled />
+    <label>Status</label>
+    <select id="hres-status"><option value="completed">completed</option><option value="needs_human">needs_human</option><option value="stuck">stuck</option><option value="failed">failed</option></select>
+    <label>Resolution summary（必填）</label>
+    <textarea id="hres-summary" rows="4" placeholder="写明为什么人工结案/更新，以及证据。"></textarea>
+    <label>Next action（可选）</label>
+    <textarea id="hres-next" rows="2"></textarea>
+    <label>Artifacts（可选；JSON array 或逐行）</label>
+    <textarea id="hres-artifacts" rows="2"></textarea>
+    <label>External side effects（可选；JSON array 或逐行；只记录，不执行）</label>
+    <textarea id="hres-effects" rows="2"></textarea>
+    <button class="btn ok" onclick="submitHarnessResolve(${jsArg(runId)})">保存人工 resolution</button>
+  `);
+}
+
+async function submitHarnessResolve(runId) {
+  const payload = {
+    harness_run_id: runId,
+    status: document.getElementById('hres-status').value,
+    resolution_summary: document.getElementById('hres-summary').value,
+    next_action: document.getElementById('hres-next').value,
+    artifacts: parseListField('hres-artifacts'),
+    external_side_effects: parseListField('hres-effects'),
+  };
+  if (!payload.resolution_summary.trim()) return toast('请填写 resolution summary');
+  const r = await api('/api/harness/resolve', payload);
+  if (r.ok) { toast('harness run 已人工更新'); closeModal(); render(); }
+  else { toast(r.error || '人工更新失败'); render(); }
 }
 
 

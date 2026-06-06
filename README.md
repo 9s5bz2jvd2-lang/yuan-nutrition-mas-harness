@@ -59,6 +59,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 
 - 每条微信/GUI 输入生成 `harness_run`，把 intake、route、approval、dispatch、collect、return 串成一条可审计链。
 - `/api/harness/status` 返回 harness 模式、计数、最近 runs、worker 回信合同，以及只读 watchdog 字段：`needs_attention`、`stale_dispatched`、`last_activity_age_seconds`、`recommended_action`。
+- GUI 的 Harness Run Protocol 弹窗显示这些 run 状态、`side_effect_reviews[]` 与待确认计数，并只提供轻量操作：只读回收、创建 retry 确认门、人工本地 resolution。
 - `POST /api/harness/resolve` 可人工把 watchdog/controller 标记的 `completed / needs_human / stuck / failed` run 写入本地 `manual_resolution`，同步 linked worker/task 审计字段；它不调用外部工具、不发微信、不批准、不派发邮箱。
 - `POST /api/harness/recover` 支持两种恢复动作：`collect` 只读扫描 reply inbox 并记录 `recovery_collect`；`request_retry` 只创建新的 `worker_dispatch` 确认门并记录 `recovery_retry`，在批准前不会重发邮箱或调用外部工具。
 - worker controller 回信从自由文本升级为 `HARNESS_REPLY_JSON` 结构化结果，回收时自动写入 `structured_result`。

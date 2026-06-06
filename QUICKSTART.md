@@ -97,6 +97,7 @@ Works locally without credentials:
 - Read-only LingTai memory/skill index when `LINGTAI_SIMPLE_AGENT_DIR` points to a real agent directory.
 - WeChat bridge HTTP endpoint for an existing LingTai WeChat MCP bridge to call.
 - Harness status endpoint: `/api/harness/status` shows intake/route/approval/dispatch/collect/return runs.
+- Harness GUI: the existing Harness Run Protocol modal shows `side_effect_reviews` and pending/approved/denied review status, with tiny controls for read-only collect, approval-gated retry, and local-only manual resolution.
 - Harness recovery endpoint: `POST /api/harness/recover` supports `action=collect` (read-only reply collection) and `action=request_retry` (create approval-gated retry; no automatic mailbox resend).
 
 Requires local tools or credentials:

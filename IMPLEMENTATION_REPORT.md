@@ -1,5 +1,9 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — Minimal harness GUI affordance
+
+The existing Harness Run Protocol modal now surfaces `side_effect_reviews[]`, review counts, and `awaiting_side_effect_review` / `pending` / `approved_for_bridge` / `denied` statuses from `GET /api/harness/status`. Each run gets small operator controls only: read-only collect, approval-gated retry creation for attention-needed runs, and local-only manual resolution/update. The GUI preserves the backend safety boundaries: collect only scans existing replies, retry only creates an approval gate, and resolve only updates local audit state without sending WeChat, dispatching mail, approving actions, or calling external tools.
+
 ## v0.24 follow-up — External side-effect return gate
 
 Worker/controller replies may now declare `external_side_effects` in `HARNESS_REPLY_JSON` without immediately becoming a WeChat-ready return. When a returned worker result has a WeChat return channel and non-empty `external_side_effects`, `/api/lingtai/collect` records the structured result, marks the worker/run as `awaiting_side_effect_review`, creates a `side_effect_reviews[]` audit row, and queues a `harness_side_effect_return` approval item. Only after that approval is confirmed does the result enter the existing `wechat_outbox` with `ready_for_bridge` status. Approval does not execute any new external action; it only releases the already-collected summary to the no-second-poller WeChat bridge. Denial leaves the run in `needs_human` and keeps return pending.

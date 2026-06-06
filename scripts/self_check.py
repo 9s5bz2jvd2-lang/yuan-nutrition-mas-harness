@@ -493,6 +493,10 @@ time.sleep(30)
         assert side_run['status']=='awaiting_side_effect_review' and side_run.get('side_effect_review_id')==side_wr.get('side_effect_review_id'), side_run
         side_review=next(r for r in st_side2.get('side_effect_reviews', []) if r.get('id')==side_wr.get('side_effect_review_id'))
         assert side_review['status']=='pending' and side_review.get('approval_id') and side_review.get('external_side_effects'), side_review
+        hs_side=req('/api/harness/status')
+        hs_side_review=next((r for r in hs_side.get('side_effect_reviews', []) if r.get('id')==side_review['id']), None)
+        assert hs_side['ok'] and hs_side['counts']['pending_side_effect_reviews'] >= 1 and hs_side['counts']['awaiting_side_effect_review'] >= 1, hs_side
+        assert hs_side_review and hs_side_review['status']=='pending' and hs_side_review.get('external_side_effects'), hs_side.get('side_effect_reviews')
         assert len(st_side2.get('wechat_outbox', []))==before_side_outbox, st_side2.get('wechat_outbox')
         side_ap=next(a for a in st_side2.get('approvals', []) if a.get('id')==side_review.get('approval_id'))
         assert side_ap['action']=='harness_side_effect_return' and side_ap.get('side_effect_review_id')==side_review['id'], side_ap
@@ -501,6 +505,9 @@ time.sleep(30)
         st_side3=req('/api/state')
         side_review_done=next(r for r in st_side3.get('side_effect_reviews', []) if r.get('id')==side_review['id'])
         assert side_review_done['status']=='approved_for_bridge' and side_review_done.get('outbox_id'), side_review_done
+        hs_side_done=req('/api/harness/status')
+        hs_side_review_done=next((r for r in hs_side_done.get('side_effect_reviews', []) if r.get('id')==side_review['id']), None)
+        assert hs_side_review_done and hs_side_review_done['status']=='approved_for_bridge' and hs_side_review_done.get('outbox_id'), hs_side_done.get('side_effect_reviews')
         side_run_done=next(h for h in st_side3.get('harness_runs', []) if h.get('id')==side_harness_id)
         assert side_run_done['status']=='completed' and side_run_done.get('side_effect_review_status')=='approved_for_bridge', side_run_done
         side_out=next((o for o in st_side3.get('wechat_outbox', []) if o.get('id')==side_review_done.get('outbox_id')), None)

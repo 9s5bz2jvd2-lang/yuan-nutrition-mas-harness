@@ -3637,7 +3637,8 @@ def _harness_watch_item(run, *, now, stale_dispatch_seconds, stale_approval_seco
 
 def harness_status(state):
     runs = state.setdefault("harness_runs", [])
-    active_status = {"routing", "awaiting_approval", "dispatched", "collecting", "needs_human", "stuck"}
+    side_reviews = state.setdefault("side_effect_reviews", [])
+    active_status = {"routing", "awaiting_approval", "dispatched", "collecting", "awaiting_side_effect_review", "needs_human", "stuck"}
     now = datetime.now(timezone.utc)
     stale_dispatch_seconds = int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_DISPATCH_SECONDS", "900"))
     stale_approval_seconds = int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_APPROVAL_SECONDS", "7200"))
@@ -3666,6 +3667,8 @@ def harness_status(state):
             "total_runs": len(runs),
             "active_runs": len([r for r in runs if r.get("status") in active_status]),
             "awaiting_approval": len([r for r in runs if r.get("status") == "awaiting_approval"]),
+            "awaiting_side_effect_review": len([r for r in runs if r.get("status") == "awaiting_side_effect_review"]),
+            "pending_side_effect_reviews": len([r for r in side_reviews if r.get("status") == "pending"]),
             "completed": len([r for r in runs if r.get("status") == "completed"]),
             "needs_attention": len(attention_runs),
             "stale_dispatched": len(stale_dispatched_runs),
@@ -3673,6 +3676,7 @@ def harness_status(state):
             "stuck": len([r for r in runs if r.get("status") == "stuck"]),
         },
         "recent_runs": monitored_runs,
+        "side_effect_reviews": side_reviews[:30],
         "watchdog": {
             "stale_dispatch_seconds": stale_dispatch_seconds,
             "stale_approval_seconds": stale_approval_seconds,
