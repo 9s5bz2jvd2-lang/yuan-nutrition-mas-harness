@@ -1,9 +1,9 @@
-# LingTai Simple v0.18 Implementation Report
+# LingTai Simple v0.19 Implementation Report
 
 
-## v0.18 Update — unified WeChat Task Router
+## v0.19 Update — unified WeChat Task Router
 
-v0.18 adds a unified Task Router and a no-second-poller WeChat bridge runner contract. The goal is not to start another WeChat poller; the current LingTai WeChat MCP remains the only real receiver/sender. Simple now exposes endpoints for the bridge to POST incoming messages, mark sent replies, and fetch pending outbox items.
+v0.19 adds a unified Task Router and a no-second-poller WeChat bridge runner contract. The goal is not to start another WeChat poller; the current LingTai WeChat MCP remains the only real receiver/sender. Simple now exposes endpoints for the bridge to POST incoming messages, mark sent replies, and fetch pending outbox items.
 
 New / changed endpoints:
 
@@ -14,11 +14,11 @@ New / changed endpoints:
 Validation added:
 
 - `scripts/self_check.py` now verifies ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
-- Expected output: `OK LingTai Simple v0.18 self-check passed`.
+- Expected output: `OK LingTai Simple v0.19 self-check passed`.
 
 Honest boundary:
 
-- v0.18 is still not an autonomous standalone WeChat poller. It is the local routing/contract layer for the existing LingTai WeChat MCP bridge.
+- v0.19 is still not an autonomous standalone WeChat poller. It is the local routing/contract layer for the existing LingTai WeChat MCP bridge.
 - Code-worker and daemon routes intentionally record handoff/plan instead of bypassing the existing Claude Code/daemon confirmation surfaces.
 
 ## v0.17 Update — real LingTai memory / skill index
@@ -46,7 +46,7 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.18 self-check passed`.
+- Expected output: `OK LingTai Simple v0.19 self-check passed`.
 
 
 ## v0.17.1 Download-and-run packaging
@@ -114,7 +114,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.18 self-check passed
+OK LingTai Simple v0.19 self-check passed
 ```
 
 ## Boundaries
@@ -134,7 +134,7 @@ OK LingTai Simple v0.18 self-check passed
 - Bound-card delete now routes to `lingtai_avatar_retire`; raw filesystem deletion remains intentionally absent.
 - Self-check validates bind, delete-to-retire routing, approval execution, and confirms the fake real agent directory remains present.
 
-## v0.18 架构验收矩阵
+## v0.19 架构验收矩阵
 
 新增：
 
@@ -142,10 +142,18 @@ OK LingTai Simple v0.18 self-check passed
 - `GET /api/architecture/status`：本地只读 API，返回机器可读验收状态、证据、缺口、测试命令与下一批优先实现项。
 - 前端新增 **📋 架构验收表** 大按钮和 modal。
 
-诚实边界：v0.18 不是宣称所有架构要求已完成，而是在 v0.17 验收矩阵基础上补上统一 Task Router 与 WeChat pending outbox 合同；下一步优先补受限 `.secrets/env fallback`、累计预算/成本面板，以及更完整的真实 agent/daemon/Codex 调度。
+诚实边界：v0.19 不是宣称所有架构要求已完成，而是在 v0.17 验收矩阵基础上补上统一 Task Router 与 WeChat pending outbox 合同；下一步优先补受限 `.secrets/env fallback`、累计预算/成本面板，以及更完整的真实 agent/daemon/Codex 调度。
 
 
 ## v0.17 Secret Vault health scan
 - `/api/health` 和 `/api/secret/scan` 现在会结构化扫描 state/example/.env/.secrets JSON 中的高置信明文 key 风险。
 - 扫描结果只返回位置、字段、严重级别和迁移建议；不会回显任何疑似 key/token 值。
 - `scripts/self_check.py` 会创建临时风险文件验证可检测性，再删除并确认健康检查恢复 OK。
+
+## v0.19 Secret Vault restricted fallback
+
+- Keychain 仍为第一优先级；API/state/log/health scan 均不回显 secret value。
+- 新增只读 env fallback：`LINGTAI_SIMPLE_API_KEY_<PROVIDER>`，例如 `LINGTAI_SIMPLE_API_KEY_DEEPSEEK`。
+- 新增显式 opt-in `.secrets/providers/<provider>.key` fallback：只有用户勾选/传入 `allow_secret_fallback=true` 且 Keychain 写入失败或被禁用时才写入；目录必须 0700，文件必须 0600；拒绝 symlink/不安全权限。
+- `/api/secret/scan` 现在报告 fallback 文件位置、mode 与权限风险，但不读取、不返回 key 内容。
+- 剩余缺口：预算/成本面板尚未与 provider secret 状态联动。

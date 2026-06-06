@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.18 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.19 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
-- Keychain 仅用「假 key」在隔离的 service 名下测试；测完即删。
-- 无论 Keychain 写入成功还是被系统拒绝，都必须验证「假 key 没有落到 state.json」。
+- 默认用 LINGTAI_SIMPLE_DISABLE_KEYCHAIN=1 强制走 env/.secrets fallback，避免污染真实 Keychain。
+- 所有假 key 都必须验证不落到 state.json / health / scan 响应。
 """
 import json, os, pathlib, shutil, subprocess, sys, time, tempfile, urllib.request, urllib.error
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -14,6 +14,8 @@ BASE = f'http://127.0.0.1:{PORT}'
 # 隔离的 Keychain service，避免污染真实配置；FAKE_KEY 永不是真实凭证。
 KC_SERVICE = 'lingtai-simple-selfcheck'
 FAKE_KEY = 'FAKE_SELF_CHECK_KEY_NOT_REAL_0000'
+FAKE_ENV_KEY = 'FAKE_ENV_SELF_CHECK_KEY_NOT_REAL_1111'
+FAKE_FALLBACK_KEY = 'FAKE_FALLBACK_SELF_CHECK_KEY_NOT_REAL_2222'
 
 def req(path, payload=None):
     data = None if payload is None else json.dumps(payload).encode('utf-8')
@@ -77,7 +79,9 @@ time.sleep(30)
            'LINGTAI_SIMPLE_AGENT_DIR': str(fake_agent_dir),
            'LINGTAI_SIMPLE_MAIL_SENDER': 'human',
            'LINGTAI_SIMPLE_REPLY_INBOX': 'mimo-2-5-pro',
-           'LINGTAI_SIMPLE_AGENT_CMD': str(fake_agent_cmd)}
+           'LINGTAI_SIMPLE_AGENT_CMD': str(fake_agent_cmd),
+           'LINGTAI_SIMPLE_DISABLE_KEYCHAIN': '1',
+           'LINGTAI_SIMPLE_API_KEY_DEEPSEEK': FAKE_ENV_KEY}
     proc = subprocess.Popen([sys.executable, 'server.py'], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     created_refs = []
@@ -85,20 +89,20 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.18', health
+        assert health['version']=='v0.19', health
         assert 'claude_code_available' in health['checks'], health
-        assert health['keychain_available'] == have_security, health
+        assert health['keychain_available'] is False, health
         assert health['checks'].get('secret_vault_scan') is True, health
         assert health['secret_vault']['summary']['high'] == 0, health
         boundaries=' '.join(health['boundaries'])
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.18' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.19' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
-        assert any(i['id']=='A06' and 'health scan' in i['test'] for i in arch['items']), arch
+        assert any(i['id']=='A06' and '.secrets fallback' in i['evidence'] for i in arch['items']), arch
         mem=req('/api/lingtai/memory')
         assert mem['ok'] and mem['counts']['pad'] >= 2 and mem['counts']['knowledge'] >= 1 and mem['counts']['skills'] >= 2, mem
         scan=req('/api/lingtai/memory/scan', {})
@@ -109,7 +113,9 @@ time.sleep(30)
         assert not forbidden['ok'] and ('允许' in (forbidden.get('error') or '') or '拒绝' in (forbidden.get('error') or '')), forbidden
         catalog=req('/api/catalog')
         assert len(catalog['providers'])>=6 and catalog['max_agents']==5
-        assert 'keychain_available' in catalog
+        assert 'keychain_available' in catalog and catalog['keychain_available'] is False
+        assert catalog.get('keychain_disabled') is True, catalog
+        assert catalog.get('secret_fallback', {}).get('env_prefix') == 'LINGTAI_SIMPLE_API_KEY_', catalog
         # 每个供应商应有 default_model 字段（UI 默认填充）
         assert all('default_model' in p for p in catalog['providers']), catalog['providers']
 
@@ -118,35 +124,39 @@ time.sleep(30)
         assert r['ok'] and 'api_key' not in r['result'], r
         assert r['result']['base_url']=='https://api.example.invalid/v1'
 
-        # ---- Keychain：用假 key 走真实 security CLI（若可用）----
+        # ---- Secret Vault fallback：Keychain 被禁用时，默认拒绝明文/非授权落盘 ----
         kc_save = req('/api/provider/save', {'provider_id':'openai','base_url':'https://api.example.invalid/v1','model':'gpt-test','api_key':FAKE_KEY,'key_label':'selfcheck'})
-        if have_security:
-            # 写入可能成功，也可能被系统拒绝（无交互 session / 锁定 keychain）。
-            # 两种情况都可接受，但都必须保证：假 key 没有落到 state.json。
-            if kc_save['ok']:
-                assert kc_save['result']['in_keychain'] is True, kc_save
-                assert kc_save['result']['key_last4']=='0000' and 'api_key' not in kc_save['result'], kc_save
-                # check_key 应报告 in_keychain=True
-                chk=req('/api/provider/check_key', {'provider_id':'openai'})
-                assert chk['ok'] and chk['result']['in_keychain'] is True, chk
-                # delete_key 应移除
-                dele=req('/api/provider/delete_key', {'provider_id':'openai'})
-                assert dele['ok'] and dele['result']['in_keychain'] is False, dele
-                chk2=req('/api/provider/check_key', {'provider_id':'openai'})
-                assert chk2['result']['in_keychain'] is False, chk2
-                print('  · Keychain 读写删 OK（security CLI 可写入）')
-            else:
-                # 被系统拒绝 → 必须是失败而非退化为明文存储
-                print('  · Keychain 写入被系统拒绝（无交互 session）；已确认未退化为明文存储')
-        else:
-            # 非 macOS：保存 key 必须被拒绝（不退化为明文）
-            assert not kc_save['ok'], kc_save
-            print('  · 无 security CLI：保存 key 被正确拒绝（不落明文）')
+        assert not kc_save['ok'] and 'allow_secret_fallback' in (kc_save.get('error') or ''), kc_save
 
-        # ---- 关键安全断言：假 key 绝不出现在 state.json ----
+        # env slot 是只读 fallback：能被检测/用于状态，但绝不回显值。
+        env_chk=req('/api/provider/check_key', {'provider_id':'deepseek'})
+        assert env_chk['ok'] and env_chk['result']['key_source']=='env' and env_chk['result']['env_slot_present'] is True, env_chk
+        assert FAKE_ENV_KEY not in json.dumps(env_chk, ensure_ascii=False), env_chk
+
+        # 显式允许后，写入受限 .secrets/providers/<provider>.key（0600 under 0700 dirs）。
+        fb_save=req('/api/provider/save', {
+            'provider_id':'glm','base_url':'https://open.bigmodel.cn/api/paas/v4','model':'glm-4-flash',
+            'api_key':FAKE_FALLBACK_KEY,'key_label':'fallback-selfcheck','allow_secret_fallback': True})
+        assert fb_save['ok'] and fb_save['result']['key_source']=='secret_file' and fb_save['result']['secret_file_present'] is True, fb_save
+        assert fb_save['result']['key_last4']=='2222' and 'api_key' not in fb_save['result'], fb_save
+        secret_path = ROOT/'.secrets'/'providers'/'glm.key'
+        assert secret_path.exists(), secret_path
+        assert (secret_path.stat().st_mode & 0o777) == 0o600, oct(secret_path.stat().st_mode & 0o777)
+        assert ((ROOT/'.secrets').stat().st_mode & 0o077) == 0, oct((ROOT/'.secrets').stat().st_mode & 0o777)
+        assert ((ROOT/'.secrets'/'providers').stat().st_mode & 0o077) == 0, oct((ROOT/'.secrets'/'providers').stat().st_mode & 0o777)
+        fb_chk=req('/api/provider/check_key', {'provider_id':'glm'})
+        assert fb_chk['ok'] and fb_chk['result']['key_source']=='secret_file', fb_chk
+        assert FAKE_FALLBACK_KEY not in json.dumps(fb_chk, ensure_ascii=False), fb_chk
+
+        # ---- 关键安全断言：假 key 绝不出现在 state.json/API 响应 ----
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED INTO state.json!'
+        assert FAKE_ENV_KEY not in state_text(state), 'ENV FAKE KEY LEAKED INTO state.json!'
+        assert FAKE_FALLBACK_KEY not in state_text(state), 'FALLBACK FAKE KEY LEAKED INTO state.json!'
 
-        # ---- Secret Vault health scan：只返回位置/字段，不回显值；能发现临时明文风险 ----
+        # ---- Secret Vault health scan：只返回位置/字段/权限，不回显值；能发现临时明文风险与不安全 fallback 权限 ----
+        secscan_clean=req('/api/secret/scan')
+        assert secscan_clean['fallback']['secret_files'] and secscan_clean['summary']['high'] == 0, secscan_clean
+        assert FAKE_FALLBACK_KEY not in json.dumps(secscan_clean, ensure_ascii=False), secscan_clean
         risk_file = ROOT/'data'/'secret_health_selfcheck.json'
         risk_value = 'selfcheck-risk-value'
         risk_file.write_text(json.dumps({'api_key': risk_value}, ensure_ascii=False), encoding='utf-8')
@@ -155,6 +165,11 @@ time.sleep(30)
         assert risk_value not in json.dumps(secscan, ensure_ascii=False), secscan
         assert any(r.get('field_path') == 'api_key' for r in secscan.get('risks', [])), secscan
         risk_file.unlink()
+        os.chmod(secret_path, 0o644)
+        secscan_unsafe=req('/api/secret/scan')
+        assert secscan_unsafe['summary']['high'] >= 1 and any(w.get('kind')=='secret_file_permission_unsafe' for w in secscan_unsafe.get('warnings', [])), secscan_unsafe
+        assert FAKE_FALLBACK_KEY not in json.dumps(secscan_unsafe, ensure_ascii=False), secscan_unsafe
+        os.chmod(secret_path, 0o600)
         health2=req('/api/health')
         assert health2['checks'].get('secret_vault_scan') is True, health2
 
@@ -261,7 +276,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.18' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.19' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -312,7 +327,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.18 self-check passed')
+        print('OK LingTai Simple v0.19 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
@@ -323,8 +338,9 @@ time.sleep(30)
         if probe.exists(): probe.unlink()
         for ref in created_refs:
             subprocess.run(['git','update-ref','-d',ref], cwd=ROOT, capture_output=True)
-        # 清理可能残留的 Keychain 假 key（隔离 service）
+        # 清理可能残留的 Keychain 假 key（隔离 service）与受限 fallback 文件。
         if have_security:
-            subprocess.run(['security','delete-generic-password','-a','openai','-s',KC_SERVICE],
-                           capture_output=True)
+            subprocess.run(['security','delete-generic-password','-a','openai','-s',KC_SERVICE], capture_output=True)
+            subprocess.run(['security','delete-generic-password','-a','glm','-s',KC_SERVICE], capture_output=True)
+        shutil.rmtree(ROOT/'.secrets', ignore_errors=True)
 if __name__ == '__main__': main()

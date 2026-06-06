@@ -5,3 +5,4 @@ data/state.json
 data/shougong/
 *.log
 data/cc_runs/
+.secrets/

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.18 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.19 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.18 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
+- v0.19 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.18 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.19 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -85,6 +85,14 @@ PROVIDER_IDS = {p["id"] for p in PROVIDER_CATALOG}
 
 # Keychain 服务名前缀：每个供应商一个 account，便于增删查。
 KEYCHAIN_SERVICE = os.environ.get("LINGTAI_SIMPLE_KEYCHAIN_SERVICE", "lingtai-simple")
+
+# 受限 Secret fallback：Keychain 不可用/被锁定时，用户可显式选择把 key 存入
+# .secrets/providers/<provider>.key。该目录/文件必须是 0700/0600；健康检查只看权限和
+# 位置，绝不回显内容。env slot 作为只读 fallback：LINGTAI_SIMPLE_API_KEY_<PROVIDER_ID>。
+SECRETS_DIR = Path(BASE_DIR) / ".secrets"
+SECRET_PROVIDER_DIR = SECRETS_DIR / "providers"
+SECRET_FALLBACK_ENV_PREFIX = "LINGTAI_SIMPLE_API_KEY_"
+KEYCHAIN_DISABLED = os.environ.get("LINGTAI_SIMPLE_DISABLE_KEYCHAIN", "").strip().lower() in ("1", "true", "yes", "on")
 
 # 真实模型调用的安全上限（避免误操作烧钱）。
 MODEL_CALL_TIMEOUT = 30          # 秒
@@ -248,8 +256,11 @@ def secret_vault_health_scan():
         for path in sorted(data_dir.glob("*.json")):
             if path not in candidates:
                 candidates.append(path)
-    secrets_dir = Path(BASE_DIR) / ".secrets"
+
     warnings = []
+    secrets_dir = SECRETS_DIR
+    provider_dir = SECRET_PROVIDER_DIR
+    secret_file_records = []
     if secrets_dir.exists():
         try:
             mode = secrets_dir.stat().st_mode & 0o777
@@ -258,12 +269,45 @@ def secret_vault_health_scan():
                 "kind": "secrets_dir_present",
                 "location": ".secrets/",
                 "mode": oct(mode),
-                "action": "若使用 .secrets fallback，应限制为 0700/0600；健康检查不会回显内容。",
+                "action": "受限 fallback 目录必须为 0700；健康检查只看权限/文件名，不回显内容。",
             })
+        except OSError:
+            warnings.append({"severity": "medium", "kind": "secrets_dir_unreadable", "location": ".secrets/"})
+        if provider_dir.exists():
+            try:
+                mode = provider_dir.stat().st_mode & 0o777
+                warnings.append({
+                    "severity": "medium" if mode & 0o077 else "info",
+                    "kind": "secret_provider_dir_present",
+                    "location": ".secrets/providers/",
+                    "mode": oct(mode),
+                    "action": "provider fallback 目录必须为 0700；key 文件必须为 0600 且不可是 symlink。",
+                })
+            except OSError:
+                warnings.append({"severity": "medium", "kind": "secret_provider_dir_unreadable", "location": ".secrets/providers/"})
+            for path in sorted(provider_dir.glob("*.key"))[:20]:
+                rel = os.path.relpath(path, BASE_DIR)
+                try:
+                    is_link = path.is_symlink()
+                    mode = path.stat().st_mode & 0o777
+                    ok_perm = (not is_link) and path.is_file() and (mode & 0o077) == 0
+                    secret_file_records.append({"location": rel, "mode": oct(mode), "restricted": ok_perm})
+                    if not ok_perm:
+                        warnings.append({
+                            "severity": "high",
+                            "kind": "secret_file_permission_unsafe",
+                            "location": rel,
+                            "mode": oct(mode),
+                            "action": "拒绝使用权限不安全的 fallback key；请 chmod 600 且确认不是 symlink。",
+                        })
+                except OSError:
+                    warnings.append({"severity": "medium", "kind": "secret_file_unreadable", "location": rel})
+        # Backward-compatible JSON fallback metadata may exist; scan it as text/JSON because it should not hold plaintext values.
+        try:
             for path in sorted(secrets_dir.glob("*.json"))[:8]:
                 candidates.append(path)
         except OSError:
-            warnings.append({"severity": "medium", "kind": "secrets_dir_unreadable", "location": ".secrets/"})
+            pass
 
     risks = []
     files_scanned = []
@@ -300,17 +344,23 @@ def secret_vault_health_scan():
             "severity": "info",
             "kind": "sensitive_env_slots_present",
             "env_names": env_names[:20],
-            "action": "env slot 只作为受限 fallback；不要在日志/报告/微信中回显变量值。",
+            "action": "env slot 只作受限只读 fallback；不要在日志/报告/微信中回显变量值。",
         })
 
-    high = sum(1 for r in risks if r.get("severity") == "high")
-    medium = sum(1 for r in risks if r.get("severity") == "medium")
+    high = sum(1 for r in risks if r.get("severity") == "high") + sum(1 for w in warnings if w.get("severity") == "high")
+    medium = sum(1 for r in risks if r.get("severity") == "medium") + sum(1 for w in warnings if w.get("severity") == "medium")
     return {
         "ok": high == 0,
         "scanned_at": now_iso(),
         "keychain_available": keychain_available(),
-        "policy": "Keychain-first; no plaintext API key in JSON/log/API responses; scan returns only locations/fields, never values.",
-        "summary": {"high": high, "medium": medium, "warnings": len(warnings), "files_scanned": len(files_scanned)},
+        "policy": "Keychain-first; optional restricted env/.secrets fallback; no plaintext API key in JSON/log/API responses; scan returns only locations/fields/permissions, never values.",
+        "fallback": {
+            "env_prefix": SECRET_FALLBACK_ENV_PREFIX,
+            "secret_dir": ".secrets/providers/",
+            "dir_present": provider_dir.exists(),
+            "secret_files": secret_file_records,
+        },
+        "summary": {"high": high, "medium": medium, "warnings": len(warnings), "files_scanned": len(files_scanned), "secret_files": len(secret_file_records)},
         "files_scanned": files_scanned,
         "risks": risks[:60],
         "warnings": warnings[:40],
@@ -455,7 +505,13 @@ def _keychain_find_item(provider_id, want_password=False):
 
 
 def keychain_available():
-    """是否能用 macOS Security.framework Keychain。"""
+    """是否能用 macOS Security.framework Keychain。
+
+    LINGTAI_SIMPLE_DISABLE_KEYCHAIN=1 可用于自检/受限环境，强制走 env/.secrets fallback；
+    这不会删除或读取已有 Keychain 项，只是让本进程不使用 Keychain。
+    """
+    if KEYCHAIN_DISABLED:
+        return False
     try:
         _load_security_framework()
         return True
@@ -520,6 +576,156 @@ def keychain_has(provider_id):
     status, item_ref, _password = _keychain_find_item(provider_id, want_password=False)
     _release_item(item_ref)
     return status == ERR_SEC_SUCCESS
+
+
+# --------------------------------------------------------------------------
+# 受限 .secrets / env fallback（Keychain-first）
+# --------------------------------------------------------------------------
+# 规则：
+# - Keychain 始终优先。fallback 只有在显式勾选 allow_secret_fallback 时才会写入。
+# - .secrets/providers/<provider>.key 必须是普通文件、非 symlink、mode 0600；目录 0700。
+# - API/state/log 只记录 source/last4/slot 名，不返回或记录 secret value。
+# - env slot 只读，不由本服务写入或删除。
+
+def _provider_env_key_name(provider_id):
+    safe = re.sub(r"[^A-Za-z0-9]", "_", str(provider_id or "")).upper()
+    return SECRET_FALLBACK_ENV_PREFIX + safe
+
+
+def _provider_secret_path(provider_id):
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(provider_id or ""))
+    if safe not in PROVIDER_IDS:
+        raise ValueError("未知供应商")
+    return SECRET_PROVIDER_DIR / f"{safe}.key"
+
+
+def _mode(path):
+    return path.stat().st_mode & 0o777
+
+
+def _restricted_mode_ok(path, *, is_dir=False):
+    try:
+        if path.is_symlink():
+            return False
+        st = path.stat()
+    except OSError:
+        return False
+    mode = st.st_mode & 0o777
+    if is_dir:
+        return (mode & 0o077) == 0
+    return path.is_file() and (mode & 0o077) == 0
+
+
+def _ensure_secret_fallback_dirs():
+    SECRETS_DIR.mkdir(mode=0o700, exist_ok=True)
+    SECRET_PROVIDER_DIR.mkdir(mode=0o700, exist_ok=True)
+    try:
+        os.chmod(SECRETS_DIR, 0o700)
+        os.chmod(SECRET_PROVIDER_DIR, 0o700)
+    except OSError:
+        pass
+    if not _restricted_mode_ok(SECRETS_DIR, is_dir=True) or not _restricted_mode_ok(SECRET_PROVIDER_DIR, is_dir=True):
+        raise KeychainUnavailable(".secrets 目录权限不安全：必须限制为 0700，拒绝写入 fallback key。")
+
+
+def secret_fallback_set(provider_id, raw_key):
+    if not raw_key:
+        raise KeychainUnavailable("fallback key 为空，拒绝写入。")
+    _ensure_secret_fallback_dirs()
+    path = _provider_secret_path(provider_id)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(raw_key.strip() + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+    if not _restricted_mode_ok(path, is_dir=False):
+        raise KeychainUnavailable("fallback key 文件权限不安全：必须限制为 0600。")
+    return True
+
+
+def secret_fallback_has(provider_id):
+    try:
+        path = _provider_secret_path(provider_id)
+    except ValueError:
+        return False
+    return path.exists() and _restricted_mode_ok(path, is_dir=False)
+
+
+def secret_fallback_get(provider_id):
+    try:
+        path = _provider_secret_path(provider_id)
+    except ValueError:
+        return None
+    if not path.exists() or not _restricted_mode_ok(path, is_dir=False):
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip() or None
+    except OSError:
+        return None
+
+
+def secret_fallback_delete(provider_id):
+    try:
+        path = _provider_secret_path(provider_id)
+    except ValueError:
+        return True
+    try:
+        if path.exists() and not path.is_symlink():
+            path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def provider_secret_status(provider_id):
+    env_name = _provider_env_key_name(provider_id)
+    env_present = bool(os.environ.get(env_name))
+    kc_available = keychain_available()
+    in_keychain = False
+    if kc_available:
+        try:
+            in_keychain = keychain_has(provider_id)
+        except Exception:
+            in_keychain = False
+    secret_file_present = secret_fallback_has(provider_id)
+    source = "keychain" if in_keychain else ("env" if env_present else ("secret_file" if secret_file_present else None))
+    return {
+        "keychain_available": kc_available,
+        "in_keychain": in_keychain,
+        "env_slot": env_name,
+        "env_slot_present": env_present,
+        "secret_file_present": secret_file_present,
+        "key_source": source,
+        "configured": bool(source),
+    }
+
+
+def resolve_provider_api_key(provider_id):
+    """Keychain-first, then env slot, then restricted .secrets file. Returns (api_key, source)."""
+    if keychain_available():
+        try:
+            api_key = keychain_get(provider_id)
+            if api_key:
+                return api_key, "keychain"
+        except Exception:
+            pass
+    env_name = _provider_env_key_name(provider_id)
+    api_key = os.environ.get(env_name)
+    if api_key:
+        return api_key, "env"
+    api_key = secret_fallback_get(provider_id)
+    if api_key:
+        return api_key, "secret_file"
+    return None, None
 
 
 # --------------------------------------------------------------------------
@@ -628,7 +834,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.18",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.19",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -638,7 +844,7 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.18 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.19 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
@@ -649,8 +855,8 @@ def default_state():
             "mark_sent_endpoint": "/api/wechat/bridge/mark_sent",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点和 runner 合约，不启动第二 poller。",
         },
-        "router_runs": [],     # v0.18 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
-        "cc_runs": [],          # Claude Code 运行记录（v0.18 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "router_runs": [],     # v0.19 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
+        "cc_runs": [],          # Claude Code 运行记录（v0.19 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -660,7 +866,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.18 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.19 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -698,10 +904,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.18 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.19 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.18"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.19"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -771,7 +977,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.18 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.19 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -1076,7 +1282,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.18 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.19 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -1085,7 +1291,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.18")
+                                    via="lingtai-simple-v0.19")
     if err:
         return None, err
     dispatch = {
@@ -1860,7 +2066,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.18 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.19 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -1877,30 +2083,58 @@ def _provider_entry(state, provider_id):
 
 
 def save_provider(state, payload):
-    """保存供应商配置。若带 api_key，则把明文 key 写入 Mac Keychain（不落 state.json）。"""
+    """保存供应商配置。若带 api_key，则 Keychain-first；显式允许时才写受限 .secrets fallback。"""
     provider_id = payload.get("provider_id")
     catalog = {p["id"]: p for p in PROVIDER_CATALOG}
     if provider_id not in catalog:
         return None, "未知供应商"
-    raw_key = (payload.get("api_key") or "").strip()   # 仅用于写 Keychain + 取后四位，绝不存进 state
+    raw_key = (payload.get("api_key") or "").strip()   # 仅用于写安全存储 + 取后四位，绝不存进 state
+    allow_fallback = bool(payload.get("allow_secret_fallback"))
     base_url = (payload.get("base_url") or catalog[provider_id]["default_base_url"]).strip()
     model = (payload.get("model") or "").strip()
 
     existing = _provider_entry(state, provider_id) or {}
-    in_keychain = bool(existing.get("in_keychain"))
+    status = provider_secret_status(provider_id)
     key_last4_val = existing.get("key_last4")
+    key_source = status.get("key_source")
 
-    # 若提供了新 key → 写入 Keychain（失败则整笔失败，绝不退化为明文存储）
     if raw_key:
-        if not keychain_available():
-            return None, ("无法保存 key：本机无法使用 macOS Security.framework（Keychain 不可用）。"
-                          "为防止明文泄露，已拒绝保存。你仍可只保存 base_url / model（不含 key）。")
-        try:
-            keychain_set(provider_id, raw_key)
-        except KeychainUnavailable as e:
-            return None, str(e)
-        in_keychain = True
+        stored = False
+        keychain_error = None
+        if keychain_available():
+            try:
+                keychain_set(provider_id, raw_key)
+                stored = True
+                key_source = "keychain"
+            except KeychainUnavailable as e:
+                keychain_error = str(e)
+        else:
+            keychain_error = "Keychain 不可用"
+        if not stored:
+            if not allow_fallback:
+                return None, (
+                    "无法保存 key 到 Keychain：" + (keychain_error or "未知错误") +
+                    "。为防止明文泄露，默认拒绝落盘；如你明确接受受限 fallback，请勾选 allow_secret_fallback，"
+                    "系统会写入 .secrets/providers/<provider>.key 并强制 0700/0600 权限。"
+                )
+            try:
+                secret_fallback_set(provider_id, raw_key)
+                key_source = "secret_file"
+                stored = True
+            except KeychainUnavailable as e:
+                return None, str(e)
         key_last4_val = key_last4(raw_key)
+
+    status = provider_secret_status(provider_id)
+    if key_source:
+        # provider_secret_status is authoritative after writes, but env may appear before file if both exist.
+        key_source = status.get("key_source") or key_source
+    else:
+        key_source = status.get("key_source")
+    in_keychain = bool(status.get("in_keychain"))
+    secret_file_present = bool(status.get("secret_file_present"))
+    env_slot_present = bool(status.get("env_slot_present"))
+    configured = bool(key_source)
 
     entry = {
         "provider_id": provider_id,
@@ -1908,63 +2142,75 @@ def save_provider(state, payload):
         "base_url": base_url,
         "model": model,
         "tags": catalog[provider_id]["tags"],
-        "configured": in_keychain,
-        "in_keychain": in_keychain,           # key 是否存在于 Keychain
+        "configured": configured,
+        "in_keychain": in_keychain,
+        "key_source": key_source,
+        "secret_file_present": secret_file_present,
+        "env_slot_present": env_slot_present,
+        "env_slot": status.get("env_slot"),
         "key_label": payload.get("key_label") or existing.get("key_label") or None,
-        "key_last4": key_last4_val,           # 仅展示用的后四位
+        "key_last4": key_last4_val if configured else None,
         "updated_at": now_iso(),
     }
-    # 防御性：绝不把明文 key 放进可序列化的 entry
     entry.pop("api_key", None)
-    # upsert
     state["providers"] = [p for p in state["providers"] if p["provider_id"] != provider_id]
     state["providers"].append(entry)
-    # 日志绝不打印 key
-    log_event(state, f"保存供应商配置：{entry['name']}（in_keychain={in_keychain}）")
+    log_event(state, f"保存供应商配置：{entry['name']}（key_source={key_source or 'none'}）")
     return entry, None
 
 
 def delete_provider_key(state, payload):
-    """从 Keychain 删除该供应商的 key，并把状态标记为未配置（保留 base_url / model）。"""
+    """删除本服务可管理的 key：Keychain + .secrets fallback。env slot 只提示，不能删除。"""
     provider_id = payload.get("provider_id")
     if provider_id not in PROVIDER_IDS:
         return None, "未知供应商"
-    if not keychain_available():
-        return None, "Keychain 不可用（非 macOS 或无法加载 Security.framework）。"
-    keychain_delete(provider_id)  # 不存在视为已删除
+    deleted_keychain = False
+    if keychain_available():
+        try:
+            deleted_keychain = bool(keychain_delete(provider_id))
+        except Exception:
+            deleted_keychain = False
+    deleted_secret_file = secret_fallback_delete(provider_id)
+    status = provider_secret_status(provider_id)
     entry = _provider_entry(state, provider_id)
     if entry:
-        entry["in_keychain"] = False
-        entry["configured"] = False
-        entry["key_last4"] = None
+        entry["in_keychain"] = bool(status.get("in_keychain"))
+        entry["secret_file_present"] = bool(status.get("secret_file_present"))
+        entry["env_slot_present"] = bool(status.get("env_slot_present"))
+        entry["key_source"] = status.get("key_source")
+        entry["configured"] = bool(status.get("configured"))
+        if not entry["configured"]:
+            entry["key_last4"] = None
         entry["updated_at"] = now_iso()
-    log_event(state, f"已从 Keychain 删除 key：{provider_id}")
-    return {"provider_id": provider_id, "in_keychain": False}, None
+    log_event(state, f"已删除 provider key（Keychain/.secrets 可管理部分）：{provider_id}")
+    return {"provider_id": provider_id, "deleted_keychain": deleted_keychain,
+            "deleted_secret_file": deleted_secret_file, **status}, None
 
 
 def check_provider_key(state, payload):
-    """检查 Keychain 中是否存在该供应商的 key（不读出明文）。同步修正 state 标记。"""
+    """检查 Keychain/env/.secrets 是否存在该供应商 key（不读出/回显明文）。同步修正 state 标记。"""
     provider_id = payload.get("provider_id")
     if provider_id not in PROVIDER_IDS:
         return None, "未知供应商"
-    if not keychain_available():
-        return {"provider_id": provider_id, "keychain_available": False,
-                "in_keychain": False,
-                "note": "本机无法加载 macOS Security.framework，无法使用 Keychain。"}, None
-    present = keychain_has(provider_id)
+    status = provider_secret_status(provider_id)
     entry = _provider_entry(state, provider_id)
     if entry:
-        entry["in_keychain"] = present
-        entry["configured"] = present
-        if not present:
+        entry["in_keychain"] = bool(status.get("in_keychain"))
+        entry["secret_file_present"] = bool(status.get("secret_file_present"))
+        entry["env_slot_present"] = bool(status.get("env_slot_present"))
+        entry["env_slot"] = status.get("env_slot")
+        entry["key_source"] = status.get("key_source")
+        entry["configured"] = bool(status.get("configured"))
+        if not entry["configured"]:
             entry["key_last4"] = None
-    return {"provider_id": provider_id, "keychain_available": True,
-            "in_keychain": present}, None
+    if not status.get("keychain_available"):
+        status["note"] = "本机无法加载 macOS Security.framework；可使用只读 env slot 或显式受限 .secrets fallback。"
+    return {"provider_id": provider_id, **status}, None
 
 
 def prepare_model_test(state, payload):
     """
-    真实模型调用的「锁内准备」阶段：校验 + 从 Keychain 取 key + 解析 base_url/model。
+    真实模型调用的「锁内准备」阶段：校验 + Keychain-first/env/.secrets 取 key + 解析 base_url/model。
     返回 (call_spec, error)。call_spec 含明文 key，仅供随后（锁外）发起网络请求用，
     绝不写入 state / 日志 / 响应。
     """
@@ -1982,20 +2228,19 @@ def prepare_model_test(state, payload):
              or catalog[provider_id]["default_model"])
     prompt = (payload.get("prompt") or "").strip()
 
-    if not keychain_available():
-        return None, "Keychain 不可用（非 macOS 或无法加载 Security.framework），无法取出 key 进行真实调用。"
-    api_key = keychain_get(provider_id)
+    api_key, key_source = resolve_provider_api_key(provider_id)
     if not api_key:
-        return None, "Keychain 中没有该供应商的 key，请先在「模型 / API 中心」保存 key。"
+        env_name = _provider_env_key_name(provider_id)
+        return None, ("未找到该供应商 key：请先保存到 Keychain；或设置只读 env slot " + env_name +
+                      "；或在模型/API中心显式启用受限 .secrets fallback。")
 
-    log_event(state, f"真实模型调用（可能计费）：{provider_id} / {model}", kind="real_api")
+    log_event(state, f"真实模型调用（可能计费）：{provider_id} / {model} / key_source={key_source}", kind="real_api")
     return {"provider_id": provider_id, "base_url": base_url, "model": model,
-            "prompt": prompt, "api_key": api_key}, None
-
+            "prompt": prompt, "api_key": api_key, "key_source": key_source}, None
 
 
 # --------------------------------------------------------------------------
-# Unified Task Router / WeChat runner contract (v0.18)
+# Unified Task Router / WeChat runner contract (v0.19)
 # --------------------------------------------------------------------------
 
 def _first_available_agent(state, *, fallback_name="微信主控灵", fallback_role="长期助手", lingtai_address=""):
@@ -2286,7 +2531,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.18 当前状态：",
+        "圆酱，LingTai Simple v0.19 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -2423,7 +2668,7 @@ def wechat_bridge_incoming(state, payload):
         item["stages"].append("收功单已生成")
         reply = f"已生成收功单：{sg['path']}\n\n你可以先离屏休息；回来按收功单继续。"
     else:
-        # 默认入口统一交给 v0.18 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
+        # 默认入口统一交给 v0.19 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
         routed, err = route_task(state, {"text": text, "source": "wechat_bridge", "confirm_dispatch": bool(payload.get("confirm_dispatch")), "address": payload.get("address") or ""})
         if err:
             item["status"] = "卡住"
@@ -2465,7 +2710,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.18（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.19（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -3011,7 +3256,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.18 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.19 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -3545,7 +3790,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.18 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.19 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -3566,10 +3811,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.18（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.19（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.18 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.19 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -3813,9 +4058,9 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "Mac Keychain 优先；fallback .secrets/env slot 权限受限；启动扫描明文 key 风险；日志/报告/prompt/微信回复脱敏。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:169-182",
         "status": "partial",
-        "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；/api/health 现返回 secret_vault 结构化扫描，只给位置/字段/行动建议，不回显值；self_check 用假 key 和临时风险文件验证不落盘与可检测。",
-        "gap": "尚未实现受限 .secrets/env fallback；价格/预算策略仍需与 Secret Vault 联动。",
-        "test": "python3 scripts/self_check.py（Keychain 可用性、state 脱敏、Secret Vault health scan）；提交前高置信秘密扫描。",
+        "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；Keychain 不可用/被禁用时，可显式选择受限 .secrets/providers/<provider>.key fallback（目录 0700、文件 0600、拒绝 symlink/不安全权限），或使用只读 env slot；/api/health 返回 secret_vault 结构化扫描，只给位置/字段/权限/行动建议，不回显值；self_check 用假 key 验证 env/.secrets fallback、权限告警与脱敏。",
+        "gap": "受限 env/.secrets fallback 已补上；价格/预算策略仍需与 Secret Vault / Model API Registry 联动。",
+        "test": "python3 scripts/self_check.py（Keychain disable、env slot、受限 .secrets fallback、权限告警、state/health 脱敏）；提交前高置信秘密扫描。",
     },
     {
         "id": "A07",
@@ -3843,7 +4088,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
         "status": "done",
-        "evidence": "v0.18 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "evidence": "v0.19 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
         "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
         "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
     },
@@ -3877,7 +4122,7 @@ def architecture_acceptance_status():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     return {
         "ok": True,
-        "version": "v0.18",
+        "version": "v0.19",
         "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
         "summary": {
             "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
@@ -3886,9 +4131,9 @@ def architecture_acceptance_status():
         },
         "items": ARCHITECTURE_ACCEPTANCE_ITEMS,
         "next_recommended_work": [
-            "补受限 .secrets/env fallback：作为 Keychain 不可用时的明确、权限受限备用槽，仍需健康检查和脱敏。",
-            "继续把 Task Router 扩展到受控 daemon/Codex/real avatar 调度与结果汇总。",
             "补累计预算/成本面板：provider/任务维度 cost cap、长跑告警与确认队列联动。",
+            "继续把 Task Router 扩展到受控 daemon/Codex/real avatar 调度与结果汇总。",
+            "把 Secret Vault 状态与模型调用成本/确认队列做更细粒度联动。",
         ],
     }
 
@@ -3913,7 +4158,7 @@ def health_check():
     required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir", "secret_vault_scan")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.18",
+        "version": "v0.19",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -3938,8 +4183,8 @@ def health_check():
             "real LingTai lifecycle signals: confirmation-gated lull/suspend/interrupt/clear/CPR (no filesystem deletion, no nirvana)",
             "real LingTai durable-store index: read-only pad/knowledge/custom skills/shared skills/summaries view",
             "not connected yet: autonomous standalone WeChat poller",
-            "Secret Vault health scan reports plaintext-key risks without returning values",
-            "no plaintext API key in JSON/logs/responses (Keychain-first)",
+            "Secret Vault health scan reports plaintext-key risks and unsafe fallback permissions without returning values",
+            "no plaintext API key in JSON/logs/responses (Keychain-first; restricted env/.secrets fallback)",
         ],
     }
 
@@ -3949,7 +4194,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.18"
+    server_version = "LingTaiSimple/0.19"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -4019,6 +4264,14 @@ class Handler(BaseHTTPRequestHandler):
                 "cc_levels": CC_PERMISSION_LEVELS,
                 "max_agents": MAX_AGENTS,
                 "keychain_available": keychain_available(),
+                "keychain_disabled": KEYCHAIN_DISABLED,
+                "secret_fallback": {
+                    "policy": "Keychain-first; env slot is read-only; restricted .secrets fallback requires explicit opt-in.",
+                    "env_prefix": SECRET_FALLBACK_ENV_PREFIX,
+                    "secret_dir": str(SECRET_PROVIDER_DIR),
+                    "file_mode": "0600",
+                    "dir_mode": "0700",
+                },
             })
         if route == "/api/rollback/preview":
             state = load_state()
@@ -4086,6 +4339,7 @@ class Handler(BaseHTTPRequestHandler):
                 resp = {"ok": False, "error": err, "state": self._public_state(state)}
                 return self._send_json(resp, 400)
             result.pop("api_key", None)  # 防御性
+            result["key_source"] = spec.get("key_source")
             log_event(state, f"真实模型调用成功：{pid} / {result.get('model')} "
                              f"（{result.get('latency_ms')}ms）", kind="real_api")
             save_state(state)
@@ -4271,7 +4525,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.18 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.19 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

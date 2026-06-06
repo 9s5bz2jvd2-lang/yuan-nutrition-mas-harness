@@ -251,24 +251,31 @@ function renderApprovals() {
     </div>`).join("");
 }
 
+function keySourceLabel(p) {
+  const source = p.key_source || (p.in_keychain ? "keychain" : (p.env_slot_present ? "env" : (p.secret_file_present ? "secret_file" : "")));
+  const tail = p.key_last4 ? " ····" + esc(p.key_last4) : "";
+  if (source === "keychain") return `<span class="tag done">🔐 Keychain${tail}</span>`;
+  if (source === "env") return `<span class="tag done">🌱 env slot${tail}</span>`;
+  if (source === "secret_file") return `<span class="tag done">🗝️ .secrets${tail}</span>`;
+  return `<span class="tag waiting">未配置 key</span>`;
+}
+
 function renderProviders() {
   const el = $("#providers");
   if (!STATE.providers.length) { el.innerHTML = `<div class="empty">还没有配置任何供应商。</div>`; return; }
-  el.innerHTML = STATE.providers.map(p => {
-    const hasKey = p.in_keychain || p.configured;
-    return `
+  el.innerHTML = STATE.providers.map(p => `
     <div class="row">
       <div class="row-top">
         <span class="row-title">${esc(p.name)}</span>
-        ${hasKey ? `<span class="tag done">🔐 Keychain${p.key_last4 ? " ····" + esc(p.key_last4) : ""}</span>` : `<span class="tag waiting">未配置 key</span>`}
+        ${keySourceLabel(p)}
       </div>
       <div class="row-sub">
         base_url：${esc(p.base_url || "(未设置)")}<br>
         模型：${esc(p.model || "(未设置)")} ${p.key_label ? "· 标签 " + esc(p.key_label) : ""}
+        ${p.env_slot ? `<br>env slot：<code>${esc(p.env_slot)}</code>${p.env_slot_present ? "（已检测）" : ""}` : ""}
       </div>
       <div class="cap-tags">${(p.tags || []).map(t => `<span class="ct">${esc(t)}</span>`).join("")}</div>
-    </div>`;
-  }).join("");
+    </div>`).join("");
 }
 
 function renderCCLevels() {
@@ -459,9 +466,10 @@ function openModelsModal() {
   const opts = CATALOG.providers
     .map(p => `<option value="${p.id}" data-url="${esc(p.default_base_url)}" data-model="${esc(p.default_model || "")}">${esc(p.name)}</option>`)
     .join("");
+  const policy = (CATALOG && CATALOG.secret_fallback) || {};
   const kcBanner = kc
-    ? `<div class="preview">🔐 真实能力：API key 会被存进 <b>Mac 系统 Keychain</b>，不会写入 state.json / 日志 / 界面。后端只保留「已配置 + 后四位」用于展示。</div>`
-    : `<div class="preview">⚠️ 本机没有 macOS <code>security</code> 命令，Keychain 不可用。为防明文泄露，<b>无法保存 key</b>；你仍可保存 base_url / 模型名（不含 key）。</div>`;
+    ? `<div class="preview">🔐 真实能力：API key 优先存进 <b>Mac 系统 Keychain</b>；后端不把 key 写入 state.json / 日志 / 界面，只保存来源、后四位和 env slot 名。</div>`
+    : `<div class="preview">⚠️ Keychain 当前不可用或已被测试环境禁用。你可以继续保存 base_url / 模型名；若明确接受，可勾选下面的受限 <code>.secrets</code> fallback，把 key 写入 <code>${esc(policy.secret_dir || ".secrets/providers")}/&lt;provider&gt;.key</code>（目录 0700、文件 0600、健康检查只看权限不看值）。也可手动设置只读 env slot：<code>${esc(policy.env_prefix || "LINGTAI_SIMPLE_API_KEY_")}&lt;PROVIDER&gt;</code>。</div>`;
   openModal("🧠 模型 / API 中心", `
     ${kcBanner}
     <label>供应商</label>
@@ -470,14 +478,15 @@ function openModelsModal() {
     <input id="pv-url" placeholder="https://..." />
     <label>模型名（可编辑）</label>
     <input id="pv-model" placeholder="例如：gpt-4o-mini / deepseek-chat / glm-4-flash" />
-    <label>API Key（明文只进 Keychain，不回显、不入库）</label>
-    <input id="pv-key" type="password" placeholder="${kc ? "粘贴 key（存入系统 Keychain）" : "Keychain 不可用，无法保存 key"}" ${kc ? "" : "disabled"} />
+    <label>API Key（优先进 Keychain；显式勾选时可写受限 .secrets fallback；永不回显、不入库）</label>
+    <input id="pv-key" type="password" placeholder="${kc ? "粘贴 key（优先存入系统 Keychain）" : "Keychain 不可用；可勾选受限 .secrets fallback 后保存"}" />
+    <label class="checkrow"><input type="checkbox" id="pv-allow-fallback" /> Keychain 写入失败/不可用时，允许写入受限 <code>.secrets</code> fallback（仅本机文件，强制 0700/0600；不用时请勿勾选）</label>
     <label>Key 标签（可选，便于你识别）</label>
     <input id="pv-label" placeholder="例如：圆酱-个人额度" />
     <div class="row-actions">
-      <button class="btn primary" onclick="submitProvider()">保存配置${kc ? "（key 存 Keychain）" : ""}</button>
-      <button class="btn small" onclick="checkProviderKey()">检查 Keychain</button>
-      <button class="btn small danger" onclick="deleteProviderKey()">删除 Keychain key</button>
+      <button class="btn primary" onclick="submitProvider()">保存配置${kc ? "（Keychain-first）" : ""}</button>
+      <button class="btn small" onclick="checkProviderKey()">检查 key 来源</button>
+      <button class="btn small danger" onclick="deleteProviderKey()">删除 Keychain/.secrets key</button>
     </div>
 
     <hr class="soft" />
@@ -505,27 +514,33 @@ async function submitProvider() {
     provider_id: $("#pv-id").value,
     base_url: $("#pv-url").value,
     model: $("#pv-model").value,
-    api_key: $("#pv-key").value,   // 明文仅用于写 Keychain，后端不入库
+    api_key: $("#pv-key").value,   // 明文仅用于写 Keychain 或显式受限 fallback，后端不入库
+    allow_secret_fallback: $("#pv-allow-fallback")?.checked || false,
     key_label: $("#pv-label").value,
   });
   if (r.ok) {
     $("#pv-key").value = "";
-    toast(r.result && r.result.in_keychain ? "已保存，key 已进 Keychain 🔐" : "已保存配置（无 key）");
+    const src = r.result && r.result.key_source ? r.result.key_source : "none";
+    toast(src === "keychain" ? "已保存，key 已进 Keychain 🔐" : (src === "secret_file" ? "已保存，key 已进受限 .secrets 🗝️" : (src === "env" ? "已保存配置，当前使用 env slot 🌱" : "已保存配置（无 key）")));
     render();
   } else toast(r.error || "保存失败");
 }
 async function checkProviderKey() {
   const r = await api("/api/provider/check_key", { provider_id: $("#pv-id").value });
   if (r.ok) {
-    if (!r.result.keychain_available) toast("Keychain 不可用：" + (r.result.note || ""));
-    else toast(r.result.in_keychain ? "Keychain 里有这个 key ✅" : "Keychain 里没有这个 key");
+    const src = r.result.key_source || "none";
+    const pieces = [];
+    if (r.result.in_keychain) pieces.push("Keychain");
+    if (r.result.env_slot_present) pieces.push("env slot");
+    if (r.result.secret_file_present) pieces.push(".secrets");
+    toast(src === "none" ? "未找到 key；可用 Keychain / env slot / 受限 .secrets" : "已找到 key 来源：" + pieces.join(" + "));
     render();
   } else toast(r.error || "检查失败");
 }
 async function deleteProviderKey() {
-  if (!confirm("从 Mac Keychain 删除该供应商的 key？")) return;
+  if (!confirm("删除本服务可管理的 key？会删除 Mac Keychain 与受限 .secrets 文件；env slot 只能由你在系统环境变量里删除。")) return;
   const r = await api("/api/provider/delete_key", { provider_id: $("#pv-id").value });
-  if (r.ok) { toast("已从 Keychain 删除 key"); render(); }
+  if (r.ok) { toast(r.result.env_slot_present ? "已删除 Keychain/.secrets；但 env slot 仍存在" : "已删除 Keychain/.secrets key"); render(); }
   else toast(r.error || "删除失败");
 }
 async function submitModelTest() {
@@ -542,7 +557,7 @@ async function submitModelTest() {
   if (!box) return;
   if (r.ok) {
     const res = r.result || {};
-    box.innerHTML = `<div class="preview">✅ 真实调用成功 · 模型 ${esc(res.model || "")} · ${esc(String(res.latency_ms || "?"))}ms
+    box.innerHTML = `<div class="preview">✅ 真实调用成功 · 模型 ${esc(res.model || "")} · key 来源 ${esc(res.key_source || "未知")} · ${esc(String(res.latency_ms || "?"))}ms
 ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
       <div class="preview" style="white-space:pre-wrap;">${esc(res.reply || "(无文本回复)")}</div>`;
     toast("真实模型调用成功 ✅");

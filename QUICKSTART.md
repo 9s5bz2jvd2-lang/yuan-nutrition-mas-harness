@@ -60,10 +60,10 @@ python3 scripts/self_check.py
 Expected output:
 
 ```text
-OK LingTai Simple v0.18 self-check passed
+OK LingTai Simple v0.19 self-check passed
 ```
 
-The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, and the v0.18 memory/skill read-only index. It also verifies `.secrets` is not readable through the memory endpoint.
+The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, and the v0.19 memory/skill read-only index. It also verifies `.secrets` is not readable through the memory endpoint.
 
 Developer optional checks:
 
@@ -111,3 +111,14 @@ Requires local tools or credentials:
 - The memory/skill index is read-only and rejects `.secrets`, mailbox contents, logs, hidden files, and arbitrary paths.
 - Rollback can revert tracked files in this repo, but cannot undo already-sent WeChat/email/API/GitHub side effects.
 - Dangerous actions are routed through approval records; if a feature is not truly connected, the README must say so.
+
+
+## Secret Vault fallback（可选）
+
+默认优先使用 macOS Keychain 保存模型 API key。若 Keychain 在非交互环境不可用，可选择：
+
+- 只读环境变量：`LINGTAI_SIMPLE_API_KEY_DEEPSEEK=... ./run.sh`
+- 或在模型/API中心显式勾选受限 `.secrets` fallback（写入 `.secrets/providers/<provider>.key`，目录 0700、文件 0600）。
+- 自检/受限环境可设 `LINGTAI_SIMPLE_DISABLE_KEYCHAIN=1` 强制不使用 Keychain。
+
+无论哪种方式，API 响应、state、health scan 都不回显 key 明文。

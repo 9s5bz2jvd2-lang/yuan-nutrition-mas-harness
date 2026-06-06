@@ -1,4 +1,4 @@
-# LingTai Simple 架构验收矩阵（v0.18）
+# LingTai Simple 架构验收矩阵（v0.19）
 
 > 原则：**未真实跑通，不写已完成。** 这张表把 `../ARCHITECTURE_EXPERT_DISCUSSION.md` 与圆酱“任何人可从 GitHub 下载运行”的要求逐项拆成验收状态、证据、缺口和测试命令。
 
