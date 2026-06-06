@@ -422,6 +422,90 @@ time.sleep(30)
         result_row=next((r for r in st_worker3.get('lingtai_mail_results', []) if r.get('worker_request_id')==wr_id and r.get('worker_kind')=='daemon' and r.get('structured_result')), None)
         assert result_row and result_row.get('next_action')=='self-check next action captured' and result_row.get('external_side_effects'), st_worker3.get('lingtai_mail_results')
 
+        # ---- v0.24 external_side_effects 回传确认门：有真实 WeChat return channel 时，先确认再进入 bridge outbox ----
+        st_side=json.loads(state.read_text(encoding='utf-8'))
+        side_harness_id='harness_selfcheck_side_effect_gate'
+        side_wr_id='worker_selfcheck_side_effect_gate'
+        side_dispatch_id='dispatch_selfcheck_side_effect_gate'
+        st_side.setdefault('harness_runs', []).insert(0, {
+            'id':side_harness_id,
+            'created_at':'2026-06-05T00:02:00Z',
+            'updated_at':'2026-06-05T00:02:00Z',
+            'source':'self_check',
+            'return_channel':'wechat',
+            'input':'self-check side-effect gate run',
+            'route_type':'daemon_plan',
+            'status':'dispatched',
+            'protocol':'intake -> route -> approval -> dispatch -> collect -> return',
+            'stages':[{'name':'dispatch','status':'done','at':'2026-06-05T00:02:00Z'}],
+            'artifacts':[],
+            'risk_gates':[],
+        })
+        st_side.setdefault('worker_requests', []).insert(0, {
+            'id':side_wr_id,
+            'created_at':'2026-06-05T00:02:00Z',
+            'kind':'daemon',
+            'label':'Daemon',
+            'status':'dispatched_to_controller',
+            'controller':'mimo-2-5-pro',
+            'description':'self-check side-effect gate worker',
+            'source':'self_check',
+            'route_id':'selfcheck-side-effect-route',
+            'task_id':'',
+            'agent_id':'',
+            'inbound_id':'wx-selfcheck-side-effect',
+            'user_id':'wx-selfcheck-user',
+            'reply_to_message_id':'wx-selfcheck-msg',
+            'harness_run_id':side_harness_id,
+            'steps':['created','approval_required','dispatched_to_controller'],
+        })
+        st_side.setdefault('lingtai_dispatches', []).insert(0, {
+            'id':side_dispatch_id,
+            'mailbox_id':'mailbox-selfcheck-side-effect',
+            'created_at':'2026-06-05T00:02:00Z',
+            'status':'queued_to_worker_controller',
+            'from':'human',
+            'to':'mimo-2-5-pro',
+            'subject':'Selfcheck side-effect gate dispatch',
+            'message_preview':'self-check side-effect gate worker',
+            'worker_request_id':side_wr_id,
+            'worker_kind':'daemon',
+            'harness_run_id':side_harness_id,
+        })
+        before_side_outbox=len(st_side.get('wechat_outbox', []))
+        state.write_text(json.dumps(st_side, ensure_ascii=False, indent=2), encoding='utf-8')
+        side_inbox=fake_network/'mimo-2-5-pro'/'mailbox'/'inbox'/'reply-side-effect-selfcheck-0001'
+        side_inbox.mkdir(parents=True, exist_ok=True)
+        (side_inbox/'message.json').write_text(json.dumps({
+            '_mailbox_id':'reply-side-effect-selfcheck-0001',
+            'from':'mimo-2-5-pro',
+            'to':['mimo-2-5-pro'],
+            'subject':'Re: Selfcheck side-effect gate dispatch',
+            'message':'controller reply with side effects\n```json\n'+json.dumps({'worker_request_id':side_wr_id,'harness_run_id':side_harness_id,'status':'completed','summary':'side effect gate summary','artifacts':['selfcheck://side-effect'], 'next_action':'approve bridge return only after review', 'external_side_effects':[{'kind':'fake_external_post','detail':'self-check only'}]}, ensure_ascii=False)+'\n```',
+            'received_at':'2026-06-05T00:02:30Z',
+        }, ensure_ascii=False), encoding='utf-8')
+        side_coll=req('/api/lingtai/collect', {})
+        assert side_coll['ok'] and side_coll['result']['collected']==1, side_coll
+        st_side2=req('/api/state')
+        side_wr=next(w for w in st_side2.get('worker_requests', []) if w.get('id')==side_wr_id)
+        assert side_wr['status']=='awaiting_side_effect_review' and side_wr.get('side_effect_review_id'), side_wr
+        side_run=next(h for h in st_side2.get('harness_runs', []) if h.get('id')==side_harness_id)
+        assert side_run['status']=='awaiting_side_effect_review' and side_run.get('side_effect_review_id')==side_wr.get('side_effect_review_id'), side_run
+        side_review=next(r for r in st_side2.get('side_effect_reviews', []) if r.get('id')==side_wr.get('side_effect_review_id'))
+        assert side_review['status']=='pending' and side_review.get('approval_id') and side_review.get('external_side_effects'), side_review
+        assert len(st_side2.get('wechat_outbox', []))==before_side_outbox, st_side2.get('wechat_outbox')
+        side_ap=next(a for a in st_side2.get('approvals', []) if a.get('id')==side_review.get('approval_id'))
+        assert side_ap['action']=='harness_side_effect_return' and side_ap.get('side_effect_review_id')==side_review['id'], side_ap
+        side_ok=req('/api/approval/approve', {'approval_id': side_ap['id']})
+        assert side_ok['ok'] and side_ok['result'].get('result', {}).get('outbox_id'), side_ok
+        st_side3=req('/api/state')
+        side_review_done=next(r for r in st_side3.get('side_effect_reviews', []) if r.get('id')==side_review['id'])
+        assert side_review_done['status']=='approved_for_bridge' and side_review_done.get('outbox_id'), side_review_done
+        side_run_done=next(h for h in st_side3.get('harness_runs', []) if h.get('id')==side_harness_id)
+        assert side_run_done['status']=='completed' and side_run_done.get('side_effect_review_status')=='approved_for_bridge', side_run_done
+        side_out=next((o for o in st_side3.get('wechat_outbox', []) if o.get('id')==side_review_done.get('outbox_id')), None)
+        assert side_out and side_out['status']=='ready_for_bridge' and 'side effect gate summary' in side_out.get('reply_text',''), side_out
+
         # ---- v0.24 GUI 真实 Worker 启动器：请求先入确认队列；daemon 批准后写真实 controller mailbox ----
         codex_no_cost=req('/api/worker/launcher/request', {'kind':'codex','description':'self-check: should be refused without confirm_cost'})
         assert not codex_no_cost['ok'] and '费用确认' in (codex_no_cost.get('error') or ''), codex_no_cost

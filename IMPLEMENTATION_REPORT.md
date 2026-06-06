@@ -1,5 +1,11 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — External side-effect return gate
+
+Worker/controller replies may now declare `external_side_effects` in `HARNESS_REPLY_JSON` without immediately becoming a WeChat-ready return. When a returned worker result has a WeChat return channel and non-empty `external_side_effects`, `/api/lingtai/collect` records the structured result, marks the worker/run as `awaiting_side_effect_review`, creates a `side_effect_reviews[]` audit row, and queues a `harness_side_effect_return` approval item. Only after that approval is confirmed does the result enter the existing `wechat_outbox` with `ready_for_bridge` status. Approval does not execute any new external action; it only releases the already-collected summary to the no-second-poller WeChat bridge. Denial leaves the run in `needs_human` and keeps return pending.
+
+Self-check now injects a fake controller reply with `external_side_effects` and a WeChat return channel, verifies no outbox item is created before approval, verifies the pending review/approval linkage, then approves the review and verifies a single `ready_for_bridge` outbox item is created.
+
 ## v0.24 follow-up — Harness recovery
 
 `POST /api/harness/recover` provides an operator recovery path for watchdog/controller runs without turning the watchdog into an autonomous actor. `action=collect` calls the existing reply collector in read-only mode and appends a `recovery_collect` stage; it does not approve, dispatch, send WeChat, or call external tools. `action=request_retry` is allowed only for runs that need attention (`failed` / `stuck` / `needs_human` or watchdog-stale); it creates a new `worker_dispatch` approval item and appends a `recovery_retry` stage, but it does not write any mailbox until that approval is explicitly approved. A run already awaiting approval rejects duplicate retry requests.

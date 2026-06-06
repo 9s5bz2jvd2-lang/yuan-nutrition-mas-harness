@@ -64,7 +64,7 @@ SENSITIVE_ACTIONS = {
     "code_commit", "code_pr", "code_merge",
     "rollback_apply", "delete_agent", "file_delete", "high_cost_api", "sensitive_task",
     "lingtai_lifecycle", "lingtai_avatar_spawn", "lingtai_avatar_retire",
-    "worker_dispatch", "worker_launch",
+    "worker_dispatch", "worker_launch", "harness_side_effect_return",
 }
 
 # v0.23 scoped approval grants: only bounded, repeatable, non-destructive actions may be
@@ -1191,6 +1191,7 @@ def default_state():
         "router_runs": [],     # v0.23 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
         "worker_requests": [],  # v0.23 受控 worker 调度：daemon/Codex/Claude/avatar handoff -> approval -> real LingTai mailbox -> result collection
         "worker_launches": [],   # v0.24 GUI-triggered real worker launches: Codex/Claude local subprocess, daemon/controller dispatch, avatar spawn approval
+        "side_effect_reviews": [], # v0.24 external_side_effects return gate: worker results with external effects require explicit approval before WeChat bridge return
         "cc_runs": [],          # Claude Code 运行记录（v0.23 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
@@ -1270,6 +1271,7 @@ def normalize_state(state):
     state.setdefault("router_runs", [])
     state.setdefault("worker_requests", [])
     state.setdefault("worker_launches", [])
+    state.setdefault("side_effect_reviews", [])
     state.setdefault("cc_runs", [])
     state.setdefault("orchestrations", [])
     state.setdefault("insights", [])
@@ -2276,52 +2278,66 @@ def collect_lingtai_mail_results(state, payload=None):
             wr = _worker_request_by_id(state, dispatch.get("worker_request_id"))
             if wr:
                 parsed_status = (structured or {}).get("status")
-                wr["status"] = {"completed": "completed", "needs_human": "needs_human", "stuck": "stuck", "failed": "failed"}.get(parsed_status, "reply_received")
+                side_effects = (structured or {}).get("external_side_effects") or []
+                side_review_needed = bool(side_effects) and bool(wr.get("user_id") or wr.get("reply_to_message_id"))
+                base_status = {"completed": "completed", "needs_human": "needs_human", "stuck": "stuck", "failed": "failed"}.get(parsed_status, "reply_received")
+                wr["status"] = "awaiting_side_effect_review" if side_review_needed else base_status
                 wr["reply_result_id"] = rec["id"]
                 wr["reply_preview"] = preview[:500]
                 wr["structured_result"] = structured
                 wr["next_action"] = (structured or {}).get("next_action") or ""
                 wr["artifacts"] = (structured or {}).get("artifacts") or []
-                wr["external_side_effects"] = (structured or {}).get("external_side_effects") or []
+                wr["external_side_effects"] = side_effects
                 wr["completed_at"] = rec["collected_at"]
                 wr.setdefault("steps", []).append("controller_reply_collected")
                 h_id = wr.get("harness_run_id") or (structured or {}).get("harness_run_id")
                 run = _harness_run_by_id(state, h_id) if h_id else None
                 if run:
-                    run["status"] = {"completed": "completed", "needs_human": "needs_human", "stuck": "stuck", "failed": "failed"}.get(parsed_status, "collected")
+                    run_status = {"completed": "completed", "needs_human": "needs_human", "stuck": "stuck", "failed": "failed"}.get(parsed_status, "collected")
+                    run["status"] = "awaiting_side_effect_review" if side_review_needed else run_status
                     run["reply_result_id"] = rec["id"]
                     run["structured_result"] = structured
                     run["worker_summary"] = (structured or {}).get("summary") or preview[:500]
                     run["next_action"] = (structured or {}).get("next_action") or ""
                     run["artifacts"] = (structured or {}).get("artifacts") or run.get("artifacts", [])
-                    run["external_side_effects"] = (structured or {}).get("external_side_effects") or []
+                    run["external_side_effects"] = side_effects
                     run["has_external_side_effects"] = bool(run.get("external_side_effects"))
                     _harness_stage(run, "collect", "done", reply_id=rec["id"], worker_status=parsed_status or "unstructured")
-                    _harness_stage(run, "return", "done" if parsed_status == "completed" else "pending", next_action=run.get("next_action"), external_side_effects=run.get("external_side_effects"))
+                    _harness_stage(run, "return", "pending" if side_review_needed or parsed_status != "completed" else "done", next_action=run.get("next_action"), external_side_effects=run.get("external_side_effects"))
                 if wr.get("user_id") or wr.get("reply_to_message_id"):
                     summary_text = (structured or {}).get("summary") or preview[:900]
                     next_action = (structured or {}).get("next_action") or ""
-                    side_effects = (structured or {}).get("external_side_effects") or []
                     extra_lines = []
                     if next_action:
                         extra_lines.append(f"下一步：{next_action[:300]}")
                     if side_effects:
                         extra_lines.append("外部副作用：" + _bounded(json.dumps(side_effects, ensure_ascii=False), 300))
-                    _wechat_outbox_add(
-                        state, inbound_id=wr.get("inbound_id") or rec["id"],
-                        user_id=wr.get("user_id") or "",
-                        reply_to_message_id=wr.get("reply_to_message_id") or "",
-                        reply_text=(
-                            f"受控 worker 调度已回收：{wr.get('id')}（{_worker_kind_label(wr.get('kind'))}，{(structured or {}).get('status') or 'unstructured'}）\n"
-                            f"来自：{msg.get('from') or ''}\n"
-                            f"摘要：{summary_text[:900]}"
-                            + ("\n" + "\n".join(extra_lines) if extra_lines else "")
-                        ),
+                    reply_text = (
+                        f"受控 worker 调度已回收：{wr.get('id')}（{_worker_kind_label(wr.get('kind'))}，{(structured or {}).get('status') or 'unstructured'}）\n"
+                        f"来自：{msg.get('from') or ''}\n"
+                        f"摘要：{summary_text[:900]}"
+                        + ("\n" + "\n".join(extra_lines) if extra_lines else "")
                     )
+                    if side_effects:
+                        review = create_harness_side_effect_review(state, wr=wr, rec=rec, run=run, reply_text=reply_text, side_effects=side_effects)
+                        rec["side_effect_review_id"] = review.get("id")
+                        rec["side_effect_review_status"] = review.get("status")
+                        wr["side_effect_review_id"] = review.get("id")
+                        wr.setdefault("steps", []).append("side_effect_review_requested")
+                        if run:
+                            run["side_effect_review_id"] = review.get("id")
+                            _harness_stage(run, "side_effect_review", "pending", review_id=review.get("id"), approval_id=review.get("approval_id"))
+                    else:
+                        _wechat_outbox_add(
+                            state, inbound_id=wr.get("inbound_id") or rec["id"],
+                            user_id=wr.get("user_id") or "",
+                            reply_to_message_id=wr.get("reply_to_message_id") or "",
+                            reply_text=reply_text,
+                        )
         if dispatch.get("task_id"):
             task = _task_by_id(state, dispatch.get("task_id"))
             if task:
-                task["status"] = "完成" if (structured or {}).get("status") not in ("needs_human", "stuck", "failed") else "待处理"
+                task["status"] = "待处理" if ((structured or {}).get("status") in ("needs_human", "stuck", "failed") or rec.get("side_effect_review_status") == "pending") else "完成"
                 summary = (structured or {}).get("summary") or preview[:500]
                 task["result"] = "真实 LingTai agent 已回复：" + summary[:500]
         if dispatch.get("agent_id"):
@@ -2334,6 +2350,116 @@ def collect_lingtai_mail_results(state, payload=None):
     if collected:
         log_event(state, f"回收真实 LingTai agent 回复 {len(collected)} 条（inbox={inbox_addr}）", kind="lingtai_runtime")
     return {"collected": len(collected), "inbox": inbox_addr, "results": collected}, None
+
+
+def _side_effect_review_by_id(state, review_id):
+    for review in state.setdefault("side_effect_reviews", []):
+        if review.get("id") == review_id:
+            return review
+    return None
+
+
+def create_harness_side_effect_review(state, *, wr, rec, run, reply_text, side_effects):
+    """Create an approval gate before returning worker results that declare external side effects."""
+    review = {
+        "id": new_id("serev"),
+        "status": "pending",
+        "created_at": now_iso(),
+        "worker_request_id": wr.get("id"),
+        "harness_run_id": (run or {}).get("id") or wr.get("harness_run_id"),
+        "reply_result_id": rec.get("id"),
+        "inbound_id": wr.get("inbound_id") or rec.get("id"),
+        "user_id": wr.get("user_id") or "",
+        "reply_to_message_id": wr.get("reply_to_message_id") or "",
+        "reply_text": redact(reply_text),
+        "external_side_effects": side_effects,
+        "transport": "lingtai_wechat_mcp_bridge",
+        "boundary": "approval_required_before_wechat_outbox",
+    }
+    state.setdefault("side_effect_reviews", []).insert(0, review)
+    state["side_effect_reviews"] = state["side_effect_reviews"][:80]
+    detail = (
+        f"worker_request_id: {review.get('worker_request_id')}\n"
+        f"harness_run_id: {review.get('harness_run_id')}\n"
+        f"外部副作用: {_bounded(json.dumps(side_effects, ensure_ascii=False), 800)}\n\n"
+        f"拟回传微信内容（确认前不会进入 ready_for_bridge outbox）：\n{reply_text[:1200]}"
+    )
+    ap = add_approval(state, {
+        "action": "harness_side_effect_return",
+        "title": f"Harness 外部副作用结果回传确认：{wr.get('id')}",
+        "detail": detail,
+        "preview": detail,
+        "side_effect_review_id": review["id"],
+        "worker_request_id": wr.get("id"),
+        "worker_harness_run_id": review.get("harness_run_id"),
+    })
+    review["approval_id"] = ap.get("id")
+    log_event(state, f"Harness 外部副作用结果等待回传确认：{review['id']}（worker={wr.get('id')}）", kind="harness")
+    return review
+
+
+def harness_side_effect_return_apply_real(state, ap):
+    review = _side_effect_review_by_id(state, ap.get("side_effect_review_id"))
+    if not review:
+        return None, "找不到 external_side_effects 回传确认记录"
+    if review.get("status") not in ("pending", "approval_failed"):
+        return None, "该 external_side_effects 回传确认记录已处理"
+    out = _wechat_outbox_add(
+        state,
+        inbound_id=review.get("inbound_id") or review.get("reply_result_id") or review.get("id"),
+        user_id=review.get("user_id") or "",
+        reply_to_message_id=review.get("reply_to_message_id") or "",
+        reply_text=review.get("reply_text") or "",
+    )
+    review["status"] = "approved_for_bridge"
+    review["approved_at"] = now_iso()
+    review["outbox_id"] = out.get("id")
+    wr = _worker_request_by_id(state, review.get("worker_request_id")) if review.get("worker_request_id") else None
+    if wr:
+        wr["status"] = "completed"
+        wr["side_effect_review_status"] = "approved_for_bridge"
+        wr.setdefault("steps", []).append("side_effect_review_approved")
+        if wr.get("task_id"):
+            task = _task_by_id(state, wr.get("task_id"))
+            if task:
+                task["status"] = "完成"
+                task["result"] = "外部副作用结果已确认回传：" + (review.get("reply_text") or "")[:500]
+                ag = find_agent(state, task.get("agent_id")) if task.get("agent_id") else None
+                if ag:
+                    ag["status"] = "待命"
+    run = _harness_run_by_id(state, review.get("harness_run_id")) if review.get("harness_run_id") else None
+    if run:
+        run["status"] = "completed"
+        run["side_effect_review_status"] = "approved_for_bridge"
+        _harness_stage(run, "side_effect_review", "done", review_id=review.get("id"), approval_id=ap.get("id"))
+        _harness_stage(run, "return", "done", outbox_id=out.get("id"), approved_side_effect_review_id=review.get("id"))
+    log_event(state, f"Harness 外部副作用结果已确认进入 WeChat bridge outbox：{review.get('id')} -> {out.get('id')}", kind="harness")
+    return {"review_id": review.get("id"), "outbox_id": out.get("id"), "status": review.get("status"), "external_side_effects": review.get("external_side_effects", [])}, None
+
+
+def _mark_side_effect_review_denied(state, ap):
+    review = _side_effect_review_by_id(state, ap.get("side_effect_review_id"))
+    if not review:
+        return
+    review["status"] = "denied"
+    review["denied_at"] = now_iso()
+    wr = _worker_request_by_id(state, review.get("worker_request_id")) if review.get("worker_request_id") else None
+    if wr:
+        wr["status"] = "needs_human"
+        wr["side_effect_review_status"] = "denied"
+        wr.setdefault("steps", []).append("side_effect_review_denied")
+        if wr.get("task_id"):
+            task = _task_by_id(state, wr.get("task_id"))
+            if task:
+                task["status"] = "待处理"
+                task["result"] = "外部副作用结果回传被拒绝；需要人工处理。"
+    run = _harness_run_by_id(state, review.get("harness_run_id")) if review.get("harness_run_id") else None
+    if run:
+        run["status"] = "needs_human"
+        run["side_effect_review_status"] = "denied"
+        _harness_stage(run, "side_effect_review", "denied", review_id=review.get("id"), approval_id=ap.get("id"))
+        _harness_stage(run, "return", "pending", reason="side_effect_review_denied")
+    log_event(state, f"Harness 外部副作用结果回传被拒绝：{review.get('id')}", kind="harness")
 
 
 def request_lingtai_lifecycle(state, payload):
@@ -2963,7 +3089,7 @@ def _build_approval_record(payload, action=None):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id", "cost_kind", "cost_provider_id", "cost_task_id", "cost_estimated_usd", "cost_cap_usd", "cost_reason", "worker_request_id", "worker_launch_id", "worker_kind", "worker_controller", "worker_description", "worker_route_id", "worker_inbound_id", "worker_user_id", "worker_reply_to_message_id", "worker_harness_run_id"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id", "cost_kind", "cost_provider_id", "cost_task_id", "cost_estimated_usd", "cost_cap_usd", "cost_reason", "worker_request_id", "worker_launch_id", "worker_kind", "worker_controller", "worker_description", "worker_route_id", "worker_inbound_id", "worker_user_id", "worker_reply_to_message_id", "worker_harness_run_id", "side_effect_review_id"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
@@ -3012,6 +3138,7 @@ def build_preview(action, payload):
         "budget_override": f"[预算/成本越线预览 / 确认后给该类动作一次短时放行；不会自动发起外部调用]\n{detail}",
         "worker_dispatch": f"[受控 worker 调度预览 / 确认后会写入真实 LingTai 内部邮箱，请主控 agent 执行 daemon/Codex/Claude/avatar 类工作并回信；不启动第二微信 poller，不绕过确认闸]\n{detail}",
         "worker_launch": f"[GUI 真实 worker 启动预览 / 确认后会启动本机 Codex/Claude 子进程，或创建真实 daemon/avatar handoff；输出写入本地报告并脱敏回收]\n{detail}",
+        "harness_side_effect_return": f"[Harness 外部副作用结果回传预览 / worker 声明产生外部副作用；确认后才会把回收结果放入 WeChat bridge outbox，不会执行新的外部动作]\n{detail}",
     }
     return previews.get(action, f"[预览]\n{detail}")
 
@@ -3046,6 +3173,8 @@ def resolve_approval(state, approval_id, decision, grant_scope=None):
                             ap["created_grant_id"] = grant["id"]
             else:
                 ap["status"] = "已拒绝"
+                if ap.get("action") == "harness_side_effect_return":
+                    _mark_side_effect_review_denied(state, ap)
                 # 关联任务标记拒绝
                 if ap.get("task_id"):
                     for t in state["tasks"]:
@@ -3135,6 +3264,12 @@ def _apply_approved_action(state, ap):
         return None
     if action == "worker_launch":
         result, err = worker_launch_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        return None
+    if action == "harness_side_effect_return":
+        result, err = harness_side_effect_return_apply_real(state, ap)
         if err:
             return err
         ap["result"] = result
@@ -6004,6 +6139,7 @@ class Handler(BaseHTTPRequestHandler):
             "router_runs": state.get("router_runs", [])[:30],
             "worker_requests": state.get("worker_requests", [])[:30],
             "worker_launches": state.get("worker_launches", [])[:30],
+            "side_effect_reviews": state.get("side_effect_reviews", [])[:30],
             "lingtai_runtime": state.get("lingtai_runtime", {}),
             "lingtai_dispatches": state.get("lingtai_dispatches", [])[:30],
             "lingtai_mail_results": state.get("lingtai_mail_results", [])[:30],

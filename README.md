@@ -2,7 +2,7 @@
 
 **Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan on top of [LingTai](https://github.com/Lingtai-AI/lingtai). It is designed to make lightweight agent orchestration, API management, safety approvals, rollback, and structured task handoff easier for nutrition professionals and nutrition-AI workflows.
 
-This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Every worker launch is approval-gated: Codex/Claude run as local read-only CLI subprocesses with redacted reports, daemon requests are written to the real LingTai controller mailbox, and avatar launches create same-network shallow agents. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends.
+This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Every worker launch is approval-gated: Codex/Claude run as local read-only CLI subprocesses with redacted reports, daemon requests are written to the real LingTai controller mailbox, and avatar launches create same-network shallow agents. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
 
 
 ## v0.24: GUI Worker Launcher
@@ -39,7 +39,7 @@ curl http://127.0.0.1:8765/api/harness/status
 - WeChat / GUI 来源会记录 `source`、`return_channel`、`route_id`、`task_id`、`approval_id`、`worker_request_id` 等关联，便于追踪“输入到底走到了哪里”。
 - daemon / 分神 / Codex / Claude / avatar 类请求先进入 `worker_dispatch` 确认闸；批准后写 controller 内部邮箱。
 - controller 邮件正文要求回信包含 `HARNESS_REPLY_JSON` fenced JSON，字段为 `worker_request_id / harness_run_id / status / summary / artifacts / next_action / external_side_effects`。
-- `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 与 WeChat outbox 同步更新为 `completed / needs_human / stuck / failed` 等状态，并显式沉淀 `summary / artifacts / next_action / external_side_effects`。
+- `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 更新为 `completed / needs_human / stuck / failed` 等状态，并显式沉淀 `summary / artifacts / next_action / external_side_effects`；若有 WeChat return channel 且 `external_side_effects` 非空，会先进入 `harness_side_effect_return` 确认门，批准后才进入 WeChat outbox。
 
 诚实边界：v0.24 已能从 GUI 真正启动 Codex/Claude 只读本机子进程和真实 avatar；daemon 仍由 Simple 写入真实 controller mailbox 后交给 controller 使用 daemon 工具执行。它仍不启动第二个微信 poller，也不绕过确认队列。
 
@@ -62,7 +62,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - `POST /api/harness/resolve` 可人工把 watchdog/controller 标记的 `completed / needs_human / stuck / failed` run 写入本地 `manual_resolution`，同步 linked worker/task 审计字段；它不调用外部工具、不发微信、不批准、不派发邮箱。
 - `POST /api/harness/recover` 支持两种恢复动作：`collect` 只读扫描 reply inbox 并记录 `recovery_collect`；`request_retry` 只创建新的 `worker_dispatch` 确认门并记录 `recovery_retry`，在批准前不会重发邮箱或调用外部工具。
 - worker controller 回信从自由文本升级为 `HARNESS_REPLY_JSON` 结构化结果，回收时自动写入 `structured_result`。
-- WeChat 来源的 worker 结果仍进入 `wechat_outbox`，由现有 WeChat MCP 原路回发，保持 `no_second_poller` 合同。
+- WeChat 来源的普通 worker 结果仍进入 `wechat_outbox`，由现有 WeChat MCP 原路回发；若 worker 声明 `external_side_effects`，结果先进入 `side_effect_reviews[]` 与 `harness_side_effect_return` 确认项，确认前不会变成 `ready_for_bridge`。
 
 ### -4. 确认队列 scoped grants（v0.22 已接入，v0.23 保留）
 
@@ -79,7 +79,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - `/api/task/route` 识别 daemon / 分神 / Codex / Claude / avatar 类请求后，会创建 `worker_requests[]`、本地任务和 `worker_dispatch` 确认项。
 - 批准确认项后，Simple 会写入真实 LingTai 内部邮箱，把请求交给 controller agent（默认 `mimo-2-5-pro`，可用 `LINGTAI_SIMPLE_WORKER_CONTROLLER` 覆盖）。
 - v0.23 起，调度信带 `harness_run_id`，并强制要求 controller 用 `HARNESS_REPLY_JSON` 回信。
-- `/api/lingtai/collect` 可按 `worker_request_id` / `harness_run_id` 回收 controller 回信，更新 worker request / dispatch / task / harness run，并把 `next_action`、`artifacts`、`external_side_effects` 单独落到可审计字段；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
+- `/api/lingtai/collect` 可按 `worker_request_id` / `harness_run_id` 回收 controller 回信，更新 worker request / dispatch / task / harness run，并把 `next_action`、`artifacts`、`external_side_effects` 单独落到可审计字段；若请求来自 WeChat 且无外部副作用声明，则进入 `wechat_outbox`，若声明了 `external_side_effects`，则先等待本地确认后才由现有 WeChat MCP 原路回复。
 - 边界：Simple 自身不直接启动第二个微信 poller，也不绕过 daemon/Codex/Claude/avatar 的既有安全纪律；这是“确认闸 + controller mailbox + 结构化回信汇总”的受控链路。
 
 ### -2. 预算/成本面板（v0.20 已接入，v0.23 保留）
