@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.17 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.18 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -85,7 +85,7 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.17', health
+        assert health['version']=='v0.18', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         assert health['checks'].get('secret_vault_scan') is True, health
@@ -94,7 +94,7 @@ time.sleep(30)
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.17' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.18' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
@@ -182,6 +182,19 @@ time.sleep(30)
         st_mail=req('/api/state')
         assert st_mail.get('lingtai_dispatches') and st_mail['tasks'][0]['status'] in ('已派发','等确认','完成'), st_mail
 
+        # ---- v0.18 统一 Task Router：普通任务、本地路由记录、真实 mailbox dispatch 在 fake 网络中走通 ----
+        route_local=req('/api/task/route', {'text':'自检：通过统一路由记录一个普通任务', 'source':'self_check'})
+        assert route_local['ok'] and route_local['result']['route_type']=='local_task' and route_local['result'].get('task_id'), route_local
+        st_route=req('/api/state')
+        assert st_route.get('router_runs') and st_route['router_runs'][0]['id']==route_local['result']['id'], st_route.get('router_runs')
+        route_need_confirm=req('/api/task/route', {'text':'派发 worker-one 自检路由：需要先确认再写真实邮箱', 'source':'self_check'})
+        assert route_need_confirm['ok'] and route_need_confirm['result']['route_type']=='lingtai_mailbox' and route_need_confirm['result']['status']=='needs_confirm_dispatch', route_need_confirm
+        route_disp=req('/api/task/route', {'text':'派发 worker-one 自检路由：确认后写入真实 fake outbox', 'source':'self_check', 'confirm_dispatch': True})
+        assert route_disp['ok'] and route_disp['result']['route_type']=='lingtai_mailbox' and route_disp['result']['status']=='dispatched', route_disp
+        route_mailbox_id=route_disp['result']['mailbox_id']
+        route_dispatch=next((d for d in req('/api/state').get('lingtai_dispatches', []) if d.get('mailbox_id')==route_mailbox_id), None)
+        assert route_dispatch and pathlib.Path(route_dispatch['outbox_path']).joinpath('message.json').exists(), route_disp
+
         # ---- v0.14 真实 LingTai 回复回收：在隔离 fake reply_inbox 中放入匹配回信，再只读回收到 Simple 状态 ----
         inbox_dir=fake_network/'mimo-2-5-pro'/'mailbox'/'inbox'/'reply-selfcheck-0001'
         inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -248,14 +261,21 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.17' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.18' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
         wx2=req('/api/wechat/bridge/incoming', {'text':'请帮我记录一个普通任务','user_id':'wx_selfcheck','message_id':'msg_selfcheck_task','sender':'圆酱'})
         assert wx2['ok'] and '任务队列' in wx2['result']['reply_text'], wx2
+        assert wx2['result']['inbound'].get('route_id'), wx2
+        pending=req('/api/wechat/bridge/pending', {'limit': 10})
+        assert pending['ok'] and pending['result']['runner_contract']=='no_second_poller' and pending['result']['count'] >= 1, pending
+        pending_out_id=wx2['result']['outbox']['id']
+        sent2=req('/api/wechat/bridge/mark_sent', {'outbox_id':pending_out_id,'sent_message_id':'sent_selfcheck_task'})
+        assert sent2['ok'] and sent2['result']['status']=='sent', sent2
         st=req('/api/state')
         assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
+        assert st.get('router_runs') and any(r.get('id')==wx2['result']['inbound'].get('route_id') for r in st['router_runs']), st.get('router_runs')
 
         # ---- v0.14 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
         orch=req('/api/agent/orchestrate', {'objective':'自检：把专属轻量版灵台拆给多个子灵', 'source':'self_check'})
@@ -292,7 +312,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.17 self-check passed')
+        print('OK LingTai Simple v0.18 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

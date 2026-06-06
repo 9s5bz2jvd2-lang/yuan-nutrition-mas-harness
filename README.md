@@ -1,11 +1,11 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.17
+# 圆酱专属轻量版灵台 / LingTai Simple v0.18
 
-这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.17 在真实邮箱派发、回复回收、生命周期确认闸和 avatar 管理基础上，新增 **真实 LingTai 记忆 / 技能只读索引**：可以从当前 agent 文件系统读取 pad、knowledge、custom/shared skills 与最近凝蜕摘要，让普通用户看见“这个灵记住了什么、会什么”；仍然不读 secrets、mailbox、logs，也不写任何记忆文件。
+这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.18 在真实 WeChat MCP 桥接入口、真实 LingTai 内部邮箱派发/回收、记忆/技能只读索引和 Secret Vault health scan 基础上，新增 **统一 Task Router + no-second-poller WeChat runner contract**：微信或本地 API 的一句话可以被分类为普通任务、多 agent 编排、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划；同时提供 `/api/wechat/bridge/pending` 供当前 LingTai WeChat MCP 桥接者取待发送回复。仍然不启动第二个微信 poller、不保存微信凭证，真实外发由当前 LingTai WeChat MCP 原路完成。
 
 
-## v0.17：架构验收表（不许糊弄）
+## v0.18：架构验收表（不许糊弄）
 
-圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.17 新增 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API：
+圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.18 继续用 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API 暴露真实验收状态：
 
 ```bash
 curl http://127.0.0.1:8765/api/architecture/status
@@ -13,7 +13,17 @@ curl http://127.0.0.1:8765/api/architecture/status
 
 UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partial / Missing`、已跑通证据、缺口和测试命令。原则是：**未真实跑通，不写已完成**。
 
-## v0.17 新增真实接入
+## v0.18 新增真实接入
+
+
+### -1. 统一 Task Router / WeChat runner contract（v0.18 新增）
+
+- `POST /api/task/route`：把一句话分类为普通本地任务、多 agent、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划。
+- `POST /api/wechat/bridge/pending`：返回 `ready_for_bridge` 的微信 outbox 项，供当前 LingTai WeChat MCP 桥接者发送；runner contract 固定为 `no_second_poller`。
+- `/api/wechat/bridge/incoming` 的默认普通消息现在走统一 Task Router，并在 inbox 记录 `route_id`，便于追踪“微信一句话 → 路由 → 本地任务/真实邮箱/回收/计划”的路径。
+- `confirm_dispatch=true` 时，router 可在 fake/真实 `.lingtai` 网络中写入真实内部邮箱 outbox；未确认时只创建本地任务并提示需要确认，避免误唤醒/占用真实 agent。
+
+边界：v0.18 不是独立微信 poller，也不会由本地 Simple 服务直接启动 daemon 或绕过 Claude Code/费用确认；代码苦力和 daemon 类任务只记录 handoff/计划，真实执行仍走对应受控入口。
 
 ### 0. LingTai 记忆 / 技能只读索引（v0.17 新增）
 
@@ -55,7 +65,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - Mac Keychain 密钥保险柜：API key 不落 JSON / 日志 / 响应。
 - OpenAI-compatible 真实模型 API 调用：必须显式确认费用。
 - git Time Machine / rollback：snapshot、preview、确认后真实 `git reset --hard`。
-- WeChat bridge endpoint：不启动第二个 poller，由当前 LingTai WeChat MCP 作为唯一真实收发桥。
+- WeChat bridge endpoint + pending outbox：不启动第二个 poller，由当前 LingTai WeChat MCP 作为唯一真实收发桥；`/api/wechat/bridge/pending` 供桥接者取待发送回复。
 - Claude Code：L1 只读分析、L2 本地改码、L3 本地 commit、L4 GitHub PR、L5 GitHub merge，全部走确认/安全闸。
 - 多 agent / 子灵编排：`POST /api/agent/orchestrate`，创建/选择子灵、拆任务、记录批次。
 - 洞察：`POST /api/insight/generate`，本地状态分析。
@@ -64,6 +74,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - 真实 LingTai 回复回收：`POST /api/lingtai/collect`。
 - 真实 LingTai 生命周期确认闸：`POST /api/lingtai/lifecycle/request` → approve 后写 signal / CPR。
 - 真实 LingTai 记忆 / 技能只读索引：pad / knowledge / custom/shared skills / 最近凝蜕摘要只读可见。
+- 统一 Task Router：`/api/task/route` 与 WeChat 默认入口可把一句话路由到普通任务、多 agent、洞察、心流、收功、真实 mailbox 派发/回收或受控 handoff。
 
 ## 从 GitHub 下载运行
 
@@ -86,11 +97,11 @@ node --check static/app.js
 python3 scripts/self_check.py
 ```
 
-自检覆盖：Keychain 不泄露、模型调用未确认会拒绝、任务/确认队列、Time Machine snapshot/request、WeChat bridge、Claude Code L1-L5 守门、多 agent 编排、洞察、心流、隔离 fake `.lingtai` 网络中的真实 outbox 写入、fake reply inbox 中的真实回信回收、生命周期动作只进入确认队列。
+自检覆盖：Keychain 不泄露、模型调用未确认会拒绝、任务/确认队列、Time Machine snapshot/request、WeChat bridge、`/api/task/route`、`/api/wechat/bridge/pending`、Claude Code L1-L5 守门、多 agent 编排、洞察、心流、隔离 fake `.lingtai` 网络中的 router→真实 outbox 写入、fake reply inbox 中的真实回信回收、生命周期动作只进入确认队列。
 
 ## 仍未完成
 
-- 独立常驻微信 runner（当前仍由现有 LingTai WeChat MCP 桥接，避免双 poller）。
+- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.18 提供 pending outbox/runner contract）。
 - 完整 LingTai avatar spawn / delete 管理；v0.14 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。

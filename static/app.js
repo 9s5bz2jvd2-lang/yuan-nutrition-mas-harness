@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.17 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.18 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -555,7 +555,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.17 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.18 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -712,7 +712,7 @@ async function openLingTaiRuntimeModal(taskId = '', presetAddress = '') {
     `<option value="${esc(a.address)}" ${a.address === presetAddress ? "selected" : ""}>${esc(a.address)} · ${esc(a.agent_name || '')} · ${esc(a.state || '')}</option>`
   ).join("");
   openModal("📮 派到真实 LingTai agent（内部邮箱）", `
-    <div class="preview">v0.17 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
+    <div class="preview">v0.18 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
     <label>选择本地任务</label>
     <select id="lt-task"><option value="">（手写任务，不绑定本地任务）</option>${taskOptions}</select>
     <label>真实 LingTai agent 地址</label>
@@ -783,7 +783,7 @@ async function openLingTaiAvatarModal() {
     `<option value="${esc(a.address)}" ${a.address === 'mimo-2-5-pro' ? 'selected' : ''}>${esc(a.address)} · ${esc(a.agent_name || '')}</option>`
   ).join('');
   openModal('🧬 创建真实 LingTai avatar', `
-    <div class="preview">v0.17 真实能力：确认后会在同一个 .lingtai 网络下创建 peer agent 目录，复制并净化模板 init.json，写入 .prompt，然后启动 lingtai-agent run。先只开放 shallow；不继承微信/Telegram/IMAP addon，避免重复 poller；不会删除任何既有 agent。</div>
+    <div class="preview">v0.18 真实能力：确认后会在同一个 .lingtai 网络下创建 peer agent 目录，复制并净化模板 init.json，写入 .prompt，然后启动 lingtai-agent run。先只开放 shallow；不继承微信/Telegram/IMAP addon，避免重复 poller；不会删除任何既有 agent。</div>
     <label>avatar 名称 / 地址（单段，不能有空格或斜杠）</label>
     <input id="lt-avatar-name" placeholder="例如：research-helper 或 nutrition_scribe" />
     <label>模板 agent</label>
@@ -817,7 +817,7 @@ async function openLingTaiBindModal() {
     `<option value="${esc(a.address)}">${esc(a.address)} · ${esc(a.agent_name || '')} · ${a.alive ? 'alive' : 'not live'} · ${esc(a.state || '')}</option>`
   ).join('');
   openModal('🔗 绑定既有真实 LingTai agent', `
-    <div class="preview">v0.17 真实管理能力：把同网已有真实 agent 绑定成 Simple 本地卡片，方便派发/回收/生命周期管理。此操作只改 Simple 本地状态，不启动、不删除真实 agent。</div>
+    <div class="preview">v0.18 真实管理能力：把同网已有真实 agent 绑定成 Simple 本地卡片，方便派发/回收/生命周期管理。此操作只改 Simple 本地状态，不启动、不删除真实 agent。</div>
     <label>真实 LingTai agent</label>
     <select id="lt-bind-address-select"><option value="">手动输入</option>${agentOptions}</select>
     <input id="lt-bind-address" placeholder="例如：mimo-2-5-pro 或某个 avatar 地址" />
@@ -852,7 +852,7 @@ async function openLingTaiRetireModal() {
     `<option value="${esc(a.address)}">${esc(a.address)} · ${esc(a.agent_name || '')} · ${a.alive ? 'alive' : 'not live'}</option>`
   ).join('');
   openModal('🌙 退休/解绑真实 avatar（不删除目录）', `
-    <div class="preview">v0.17 安全语义：退休/解绑不会删除真实 agent 目录，不会 nirvana；只把 Simple 本地卡片标为已退休。可选写入 sleep/suspend signal，让真实 agent 入睡或停止进程。</div>
+    <div class="preview">v0.18 安全语义：退休/解绑不会删除真实 agent 目录，不会 nirvana；只把 Simple 本地卡片标为已退休。可选写入 sleep/suspend signal，让真实 agent 入睡或停止进程。</div>
     <label>已绑定本地卡片</label>
     <select id="lt-retire-local"><option value="">不选本地卡片，手动选地址</option>${localOptions}</select>
     <label>真实 LingTai agent 地址</label>
@@ -918,7 +918,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.17 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.18 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
