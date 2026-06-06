@@ -1,8 +1,14 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.13
+# 圆酱专属轻量版灵台 / LingTai Simple v0.14
 
-这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.13 在 v0.11 的真实 LingTai 内部邮箱派发入口基础上继续往完整 LingTai runtime 接：**现在可以只读回收真实 agent 的内部邮件回复，并把 lull / suspend / interrupt / clear / CPR 等生命周期动作放入确认队列，确认后才写真实 signal 或尝试复苏。**
+这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.14 在 v0.11 的真实 LingTai 内部邮箱派发入口基础上继续往完整 LingTai runtime 接：**现在可以只读回收真实 agent 的内部邮件回复，并把 lull / suspend / interrupt / clear / CPR 等生命周期动作放入确认队列，确认后才写真实 signal 或尝试复苏。**
 
-## v0.13 新增真实接入
+## v0.14 新增真实接入
+
+### 0. avatar 绑定 / 安全退休（v0.14 新增）
+- `POST /api/lingtai/avatar/bind`：把同网已有真实 LingTai agent 绑定成 Simple 本地卡片，方便后续派发、回收、生命周期管理。绑定只改 Simple 本地状态，不启动、不删除真实 agent。
+- `POST /api/lingtai/avatar/retire`：退休/解绑先进入确认队列；批准后只把 Simple 本地卡片标为已退休/解绑，不删除真实 agent 目录，不提供 `nirvana`。
+- 退休后动作可选：`none`（只本地退休）、`lull`（写 `.sleep`）、`suspend`（写 `.suspend`）。`lull/suspend` 只在 heartbeat 新鲜时写 signal。
+- UI 中绑定了 `lingtai_address` 的卡片，“删除”按钮实际走“退休/解绑”确认闸；不会做文件系统删除。
 
 ### 1. 真实 agent 回复回收
 - `POST /api/lingtai/collect`：只读扫描 `<reply_inbox>/mailbox/inbox/*/message.json`，默认 reply inbox 为 `mimo-2-5-pro`，可用 `LINGTAI_SIMPLE_REPLY_INBOX` 修改。
@@ -20,7 +26,7 @@
   - `cpr` 在目标 heartbeat 不新鲜且有 `init.json` 时，用 `lingtai-agent run <agent_dir>` 尝试复苏。
 - UI 增加“回收真实 agent 回复”和“生命周期动作”按钮；所有生命周期动作都必须确认。
 
-边界：v0.13 仍不是完整 avatar 管理器；不会做文件删除，也不提供 nirvana。`clear` 会影响真实 agent 上下文，CPR 会尝试启动真实进程，所以必须走确认队列。
+边界：v0.14 仍不是完整 avatar 管理器；不会做文件删除，也不提供 nirvana。`clear` 会影响真实 agent 上下文，CPR 会尝试启动真实进程，所以必须走确认队列。
 
 ## 已真实接入能力总表
 
@@ -59,7 +65,7 @@ python3 scripts/self_check.py
 ## 仍未完成
 
 - 独立常驻微信 runner（当前仍由现有 LingTai WeChat MCP 桥接，避免双 poller）。
-- 完整 LingTai avatar spawn / delete 管理；v0.13 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
+- 完整 LingTai avatar spawn / delete 管理；v0.14 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。
 

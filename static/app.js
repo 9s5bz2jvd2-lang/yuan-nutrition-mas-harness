@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.13 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.14 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -110,7 +110,7 @@ function renderAgents() {
         ${a.status === "已暂停"
           ? `<button class="btn small ok" onclick="agentAction('${a.id}','resume')">恢复</button>`
           : `<button class="btn small" onclick="agentAction('${a.id}','pause')">暂停</button>`}
-        <button class="btn small danger" onclick="agentAction('${a.id}','delete')">删除</button>
+        <button class="btn small danger" onclick="agentAction('${a.id}','delete')">${a.lingtai_address ? "退休/解绑" : "删除"}</button>
       </div>
     </div>`;
   }).join("");
@@ -174,6 +174,8 @@ function renderLingTaiRuntime() {
       <button class="btn small ok" onclick="collectLingTaiReplies()">回收真实 agent 回复</button>
       <button class="btn small warn" onclick="openLingTaiLifecycleModal()">生命周期动作</button>
       <button class="btn small ok" onclick="openLingTaiAvatarModal()">创建真实 avatar</button>
+      <button class="btn small" onclick="openLingTaiBindModal()">绑定既有 agent</button>
+      <button class="btn small warn" onclick="openLingTaiRetireModal()">退休/解绑 avatar</button>
     </div>`;
   const dispatches = rows.length ? `<h4>真实派发记录</h4>` + rows.map(d => `
     <div class="row">
@@ -191,10 +193,10 @@ function renderLingTaiRuntime() {
       <div class="row-top"><span class="row-title">⚙ ${esc(e.action)} ${esc(e.address)}</span>${statusTag(e.status || "done")}</div>
       <div class="row-sub">${esc(e.created_at || "")}</div>
     </div>`).join("") : "";
-  const avatarHtml = avatars.length ? `<h4>真实 avatar 创建记录</h4>` + avatars.map(e => `
+  const avatarHtml = avatars.length ? `<h4>真实 avatar 管理记录</h4>` + avatars.map(e => `
     <div class="row">
-      <div class="row-top"><span class="row-title">🧬 ${esc(e.name || e.address)}</span>${statusTag(e.boot_status || "started")}</div>
-      <div class="row-sub">template ${esc(e.template_address || "")} · pid ${esc(String(e.pid || ""))} · ${esc(e.created_at || "")}<br>${esc(e.working_dir || "")}</div>
+      <div class="row-top"><span class="row-title">🧬 ${esc(e.event || "spawn")} · ${esc(e.name || e.address)}</span>${statusTag(e.boot_status || e.status || "started")}</div>
+      <div class="row-sub">address ${esc(e.address || "")} · template ${esc(e.template_address || "")} · pid ${esc(String(e.pid || ""))} · ${esc(e.created_at || "")}<br>${esc(e.working_dir || "")}${e.note ? "<br>备注：" + esc(e.note) : ""}</div>
     </div>`).join("") : "";
   el.innerHTML = banner + dispatches + replyHtml + lifeHtml + avatarHtml;
 }
@@ -522,7 +524,7 @@ ${res.usage ? "· tokens " + esc(JSON.stringify(res.usage)) : ""}</div>
 
 function openWechatModal() {
   openModal("💬 微信入口任务 / 桥接测试", `
-    <div class="preview">v0.13 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
+    <div class="preview">v0.14 已接入真实微信桥接端点：实际运行时由当前 LingTai WeChat MCP 把圆酱微信消息写入本服务，再原路回复；这里仍可手动提交一条本地测试消息。</div>
     <label>本地测试一条微信任务</label>
     <textarea id="wx-modal-input" placeholder="例如：让代码苦力改个 README，但不要提交"></textarea>
     <button class="btn primary" onclick="submitWechatModal()">写入微信桥接队列</button>
@@ -679,7 +681,7 @@ async function openLingTaiRuntimeModal(taskId = '', presetAddress = '') {
     `<option value="${esc(a.address)}" ${a.address === presetAddress ? "selected" : ""}>${esc(a.address)} · ${esc(a.agent_name || '')} · ${esc(a.state || '')}</option>`
   ).join("");
   openModal("📮 派到真实 LingTai agent（内部邮箱）", `
-    <div class="preview">v0.13 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
+    <div class="preview">v0.14 真实能力：把任务写入 <code>.lingtai/&lt;sender&gt;/mailbox/outbox</code>，由 kernel mailman 投递给真实 agent。不是 mock；会唤醒/占用真实 agent。</div>
     <label>选择本地任务</label>
     <select id="lt-task"><option value="">（手写任务，不绑定本地任务）</option>${taskOptions}</select>
     <label>真实 LingTai agent 地址</label>
@@ -750,7 +752,7 @@ async function openLingTaiAvatarModal() {
     `<option value="${esc(a.address)}" ${a.address === 'mimo-2-5-pro' ? 'selected' : ''}>${esc(a.address)} · ${esc(a.agent_name || '')}</option>`
   ).join('');
   openModal('🧬 创建真实 LingTai avatar', `
-    <div class="preview">v0.13 真实能力：确认后会在同一个 .lingtai 网络下创建 peer agent 目录，复制并净化模板 init.json，写入 .prompt，然后启动 lingtai-agent run。先只开放 shallow；不继承微信/Telegram/IMAP addon，避免重复 poller；不会删除任何既有 agent。</div>
+    <div class="preview">v0.14 真实能力：确认后会在同一个 .lingtai 网络下创建 peer agent 目录，复制并净化模板 init.json，写入 .prompt，然后启动 lingtai-agent run。先只开放 shallow；不继承微信/Telegram/IMAP addon，避免重复 poller；不会删除任何既有 agent。</div>
     <label>avatar 名称 / 地址（单段，不能有空格或斜杠）</label>
     <input id="lt-avatar-name" placeholder="例如：research-helper 或 nutrition_scribe" />
     <label>模板 agent</label>
@@ -776,6 +778,85 @@ async function requestLingTaiAvatar() {
   else toast(r.error || '加入 avatar 确认队列失败');
 }
 
+
+async function openLingTaiBindModal() {
+  let data = { agents: [] };
+  try { const res = await fetch('/api/lingtai/agents'); data = await res.json(); } catch (_) {}
+  const agentOptions = (data.agents || []).map(a =>
+    `<option value="${esc(a.address)}">${esc(a.address)} · ${esc(a.agent_name || '')} · ${a.alive ? 'alive' : 'not live'} · ${esc(a.state || '')}</option>`
+  ).join('');
+  openModal('🔗 绑定既有真实 LingTai agent', `
+    <div class="preview">v0.14 真实管理能力：把同网已有真实 agent 绑定成 Simple 本地卡片，方便派发/回收/生命周期管理。此操作只改 Simple 本地状态，不启动、不删除真实 agent。</div>
+    <label>真实 LingTai agent</label>
+    <select id="lt-bind-address-select"><option value="">手动输入</option>${agentOptions}</select>
+    <input id="lt-bind-address" placeholder="例如：mimo-2-5-pro 或某个 avatar 地址" />
+    <label>本地显示名称（可选）</label>
+    <input id="lt-bind-name" placeholder="留空则使用真实 agent 名称" />
+    <label>本地角色说明（可选）</label>
+    <input id="lt-bind-role" placeholder="例如：资料整理 / 审校 / 代码苦力" />
+    <button class="btn primary" onclick="submitLingTaiBind()">绑定为 Simple 本地卡片</button>
+  `);
+  const sel = document.getElementById('lt-bind-address-select');
+  sel?.addEventListener('change', () => { if (sel.value) document.getElementById('lt-bind-address').value = sel.value; });
+}
+
+async function submitLingTaiBind() {
+  const r = await api('/api/lingtai/avatar/bind', {
+    address: document.getElementById('lt-bind-address').value || document.getElementById('lt-bind-address-select').value,
+    name: document.getElementById('lt-bind-name').value,
+    role: document.getElementById('lt-bind-role').value,
+  });
+  if (r.ok) { toast('已绑定真实 LingTai agent'); closeModal(); render(); }
+  else toast(r.error || '绑定失败');
+}
+
+async function openLingTaiRetireModal() {
+  let data = { agents: [] };
+  try { const res = await fetch('/api/lingtai/agents'); data = await res.json(); } catch (_) {}
+  const realBound = (STATE.agents || []).filter(a => a.lingtai_address);
+  const localOptions = realBound.map(a =>
+    `<option value="${esc(a.id)}" data-address="${esc(a.lingtai_address)}">${esc(a.name)} · ${esc(a.lingtai_address)} · ${esc(a.status || '')}</option>`
+  ).join('');
+  const agentOptions = (data.agents || []).map(a =>
+    `<option value="${esc(a.address)}">${esc(a.address)} · ${esc(a.agent_name || '')} · ${a.alive ? 'alive' : 'not live'}</option>`
+  ).join('');
+  openModal('🌙 退休/解绑真实 avatar（不删除目录）', `
+    <div class="preview">v0.14 安全语义：退休/解绑不会删除真实 agent 目录，不会 nirvana；只把 Simple 本地卡片标为已退休。可选写入 sleep/suspend signal，让真实 agent 入睡或停止进程。</div>
+    <label>已绑定本地卡片</label>
+    <select id="lt-retire-local"><option value="">不选本地卡片，手动选地址</option>${localOptions}</select>
+    <label>真实 LingTai agent 地址</label>
+    <select id="lt-retire-address-select"><option value="">手动输入</option>${agentOptions}</select>
+    <input id="lt-retire-address" placeholder="例如：research-helper" />
+    <label>退休后动作</label>
+    <select id="lt-retire-action">
+      <option value="none">none：只在 Simple 中退休/解绑，不碰真实进程</option>
+      <option value="lull">lull：额外写 .sleep，让 agent 入睡（可被邮件唤醒）</option>
+      <option value="suspend">suspend：额外写 .suspend，停止进程</option>
+    </select>
+    <label>交接备注（可选）</label>
+    <textarea id="lt-retire-note" rows="3" placeholder="记录为什么退休、后续如何恢复或接手。"></textarea>
+    <button class="btn warn" onclick="submitLingTaiRetire()">加入确认队列</button>
+  `);
+  const localSel = document.getElementById('lt-retire-local');
+  localSel?.addEventListener('change', () => {
+    const opt = localSel.selectedOptions && localSel.selectedOptions[0];
+    if (opt && opt.dataset.address) document.getElementById('lt-retire-address').value = opt.dataset.address;
+  });
+  const addrSel = document.getElementById('lt-retire-address-select');
+  addrSel?.addEventListener('change', () => { if (addrSel.value) document.getElementById('lt-retire-address').value = addrSel.value; });
+}
+
+async function submitLingTaiRetire() {
+  const r = await api('/api/lingtai/avatar/retire', {
+    agent_id: document.getElementById('lt-retire-local').value,
+    address: document.getElementById('lt-retire-address').value || document.getElementById('lt-retire-address-select').value,
+    retire_action: document.getElementById('lt-retire-action').value,
+    note: document.getElementById('lt-retire-note').value,
+  });
+  if (r.ok) { toast('退休/解绑已加入确认队列'); closeModal(); render(); }
+  else toast(r.error || '退休/解绑失败');
+}
+
 async function loadDemoState() {
   if (!confirm("加载示例状态会覆盖当前原型数据，继续？")) return;
   const r = await api("/api/demo/load", {});
@@ -797,7 +878,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.13 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.14 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>

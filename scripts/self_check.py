@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.13 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.14 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -69,7 +69,7 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.13', health
+        assert health['version']=='v0.14', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         catalog=req('/api/catalog')
@@ -121,7 +121,7 @@ time.sleep(30)
         low=req('/api/task/assign', {'agent_id':aid,'description':'只读整理','risk':'low'}); assert low['result']['status']=='完成'
         hi=req('/api/task/assign', {'agent_id':aid,'description':'merge PR','risk':'sensitive'}); assert hi['result']['status']=='等确认'
 
-        # ---- v0.13 真实 LingTai 内部邮箱派发：在隔离 fake .lingtai 网络中写 outbox，不碰真实邮箱 ----
+        # ---- v0.14 真实 LingTai 内部邮箱派发：在隔离 fake .lingtai 网络中写 outbox，不碰真实邮箱 ----
         discovered=req('/api/lingtai/agents')
         assert discovered['agents'] and discovered['agents'][0]['address']=='worker-one', discovered
         no_confirm=req('/api/lingtai/dispatch', {'task_id':low['result']['id'], 'address':'worker-one'})
@@ -135,7 +135,7 @@ time.sleep(30)
         st_mail=req('/api/state')
         assert st_mail.get('lingtai_dispatches') and st_mail['tasks'][0]['status'] in ('已派发','等确认','完成'), st_mail
 
-        # ---- v0.13 真实 LingTai 回复回收：在隔离 fake reply_inbox 中放入匹配回信，再只读回收到 Simple 状态 ----
+        # ---- v0.14 真实 LingTai 回复回收：在隔离 fake reply_inbox 中放入匹配回信，再只读回收到 Simple 状态 ----
         inbox_dir=fake_network/'mimo-2-5-pro'/'mailbox'/'inbox'/'reply-selfcheck-0001'
         inbox_dir.mkdir(parents=True, exist_ok=True)
         reply_msg={
@@ -152,11 +152,24 @@ time.sleep(30)
         st_reply=req('/api/state')
         assert st_reply.get('lingtai_mail_results') and st_reply['lingtai_dispatches'][0]['status']=='reply_received', st_reply
 
-        # ---- v0.13 真实 LingTai 生命周期确认闸：只加入确认队列，不在 self-check 中执行真实 signal/CPR ----
+        # ---- v0.14 真实 LingTai 生命周期确认闸：只加入确认队列，不在 self-check 中执行真实 signal/CPR ----
         life=req('/api/lingtai/lifecycle/request', {'address':'worker-one','action':'lull'})
         assert life['ok'] and life['result']['action']=='lingtai_lifecycle' and life['result']['lingtai_address']=='worker-one', life
 
-        # ---- v0.13 真实 avatar spawn 确认闸：只入队，不在 self-check 中启动真实长期 agent ----
+        # ---- v0.14 真实 avatar 绑定/退休安全语义：绑定既有真实 agent；删除入口只变成退休/解绑，不删除目录 ----
+        bind=req('/api/lingtai/avatar/bind', {'address':'worker-one','name':'Worker One Bound','role':'self-check bound real agent'})
+        assert bind['ok'] and bind['result']['agent']['lingtai_address']=='worker-one', bind
+        bound_id=bind['result']['agent']['id']
+        retire_from_delete=req('/api/agent/delete', {'agent_id': bound_id})
+        assert retire_from_delete['ok'] and retire_from_delete['result']['mode']=='retire_not_delete', retire_from_delete
+        st_retq=req('/api/state')
+        assert st_retq['approvals'][0]['action']=='lingtai_avatar_retire' and st_retq['approvals'][0]['lingtai_address']=='worker-one', st_retq['approvals'][0]
+        ret_ok=req('/api/approval/approve', {'approval_id': st_retq['approvals'][0]['id']})
+        assert ret_ok['ok'] and (fake_network/'worker-one').exists(), ret_ok
+        st_retdone=req('/api/state')
+        assert any(a.get('lingtai_address')=='worker-one' and a.get('lingtai_retired') for a in st_retdone['agents']), st_retdone['agents']
+
+        # ---- v0.14 真实 avatar spawn 确认闸：只入队，不在 self-check 中启动真实长期 agent ----
         av_short=req('/api/lingtai/avatar/request', {'name':'selfcheck-avatar','template_address':'worker-one','mission':'test'})
         assert not av_short['ok'] and 'mission' in (av_short.get('error') or ''), av_short
         av=req('/api/lingtai/avatar/request', {
@@ -188,7 +201,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.13' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.14' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -197,7 +210,7 @@ time.sleep(30)
         st=req('/api/state')
         assert st['wechat_bridge']['status']=='ready' and len(st.get('wechat_outbox', []))>=2, st
 
-        # ---- v0.13 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
+        # ---- v0.14 多 agent / 洞察 / 心流：真实本地状态能力，微信桥接也能触发 ----
         orch=req('/api/agent/orchestrate', {'objective':'自检：把专属轻量版灵台拆给多个子灵', 'source':'self_check'})
         assert orch['ok'] and orch['result']['task_ids'] and orch['result']['insight_id'], orch
         st_orch=req('/api/state')
@@ -232,7 +245,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.13 self-check passed')
+        print('OK LingTai Simple v0.14 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

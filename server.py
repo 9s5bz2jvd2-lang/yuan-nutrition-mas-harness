@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.13 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.14 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.13 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
+- v0.14 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.13 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.14 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -62,7 +62,7 @@ SENSITIVE_ACTIONS = {
     "wechat_send", "email_send", "telegram_send",
     "code_commit", "code_pr", "code_merge",
     "rollback_apply", "delete_agent", "file_delete", "high_cost_api", "sensitive_task",
-    "lingtai_lifecycle", "lingtai_avatar_spawn",
+    "lingtai_lifecycle", "lingtai_avatar_spawn", "lingtai_avatar_retire",
 }
 
 # 供应商目录（OpenAI-compatible /chat/completions）。
@@ -476,7 +476,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.13",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.14",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -486,14 +486,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.13 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.14 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 运行记录（v0.13 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "cc_runs": [],          # Claude Code 运行记录（v0.14 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -503,7 +503,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.13 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.14 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -540,10 +540,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.13 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.14 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.13"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.14"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -607,7 +607,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.13 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.14 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -912,7 +912,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.13 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.14 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -921,7 +921,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.13")
+                                    via="lingtai-simple-v0.14")
     if err:
         return None, err
     dispatch = {
@@ -1183,6 +1183,138 @@ def _write_avatar_ledger(template_dir, event):
         pass
 
 
+def bind_lingtai_avatar(state, payload):
+    """Bind an existing real LingTai agent directory to a local Simple card (local state only)."""
+    address = _safe_lingtai_address(payload.get("address") or payload.get("lingtai_address") or "")
+    if not address:
+        return None, "请提供要绑定的真实 LingTai agent 地址"
+    agent_dir = _lingtai_agent_dir(address)
+    if not agent_dir or not (agent_dir / ".agent.json").exists():
+        return None, f"找不到真实 LingTai agent：{address}"
+    existing = next((a for a in state.get("agents", []) if a.get("lingtai_address") == address), None)
+    try:
+        meta = json.loads((agent_dir / ".agent.json").read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+    hb = _heartbeat_info(agent_dir)
+    name = (payload.get("name") or meta.get("nickname") or meta.get("agent_name") or address).strip()
+    role = (payload.get("role") or "已绑定真实 LingTai agent").strip()
+    if existing:
+        existing.update({
+            "name": name or existing.get("name") or address,
+            "role": role,
+            "status": "待命" if hb.get("alive") else "未在线",
+            "lingtai_address": address,
+            "context_pressure": existing.get("context_pressure", existing.get("context_base", 12)),
+            "lingtai_bound_at": existing.get("lingtai_bound_at") or now_iso(),
+            "lingtai_retired": False,
+        })
+        local_agent = existing
+    else:
+        if len(state.get("agents", [])) >= MAX_AGENTS:
+            return None, f"本地灵卡片已达上限 {MAX_AGENTS}；请先退休/删除不需要的本地卡片。"
+        local_agent = {
+            "id": new_id("agent"), "name": name or address, "role": role,
+            "provider_id": "", "model": "", "cc_level": 1,
+            "status": "待命" if hb.get("alive") else "未在线",
+            "created_at": now_iso(), "recent_tasks": [], "context_base": 12,
+            "lingtai_address": address, "context_pressure": 12,
+            "lingtai_bound_at": now_iso(), "lingtai_retired": False,
+        }
+        state.setdefault("agents", []).append(local_agent)
+    event = {
+        "id": new_id("ltavatar"), "created_at": now_iso(),
+        "event": "bind", "name": local_agent.get("name"), "address": address,
+        "local_agent_id": local_agent.get("id"), "status": "bound",
+        "alive": hb.get("alive"), "heartbeat_age_seconds": hb.get("age_seconds"),
+        "working_dir": str(agent_dir),
+    }
+    state.setdefault("lingtai_avatar_events", []).insert(0, event)
+    state["lingtai_avatar_events"] = state["lingtai_avatar_events"][:80]
+    log_event(state, f"已绑定真实 LingTai agent 到 Simple 卡片：{address}", kind="lingtai_runtime")
+    return {"agent": local_agent, "event": event}, None
+
+
+def request_lingtai_avatar_retire(state, payload):
+    """Queue a safe retirement/unbind action for a real-bound Simple card. No filesystem deletion."""
+    local_agent_id = payload.get("agent_id") or payload.get("local_agent_id") or ""
+    local_agent = find_agent(state, local_agent_id) if local_agent_id else None
+    address = _safe_lingtai_address(payload.get("address") or (local_agent or {}).get("lingtai_address") or "")
+    retire_action = (payload.get("retire_action") or payload.get("action_after_retire") or "none").strip().lower()
+    if retire_action not in {"none", "lull", "suspend"}:
+        return None, "退休动作只支持 none/lull/suspend；不会提供删除目录或 nirvana。"
+    if not address:
+        return None, "请提供要退休/解绑的真实 LingTai agent 地址"
+    agent_dir = _lingtai_agent_dir(address)
+    if not agent_dir or not (agent_dir / ".agent.json").exists():
+        return None, f"找不到真实 LingTai agent：{address}"
+    hb = _heartbeat_info(agent_dir)
+    note = (payload.get("note") or payload.get("handoff") or "").strip()
+    detail = (
+        f"地址：{address}\n本地卡片：{(local_agent or {}).get('name') or local_agent_id or '未绑定'}\n"
+        f"退休后动作：{retire_action}\n当前 heartbeat：alive={hb.get('alive')} age={hb.get('age_seconds')}s\n"
+        "确认后不会删除真实 agent 目录，不会 nirvana；只把 Simple 本地卡片标为已退休/解绑。"
+        "若选择 lull/suspend，会额外写入 .sleep 或 .suspend signal。\n\n"
+        f"交接备注：\n{note or '（无）'}"
+    )
+    ap = add_approval(state, {
+        "action": "lingtai_avatar_retire",
+        "title": f"真实 LingTai avatar 退休/解绑：{address}",
+        "detail": detail,
+        "lingtai_address": address,
+        "local_agent_id": local_agent_id,
+        "avatar_retire_action": retire_action,
+        "avatar_retire_note": note,
+        "preview": detail,
+    })
+    return ap, None
+
+
+def lingtai_avatar_retire_apply_real(state, ap):
+    address = _safe_lingtai_address(ap.get("lingtai_address") or "")
+    retire_action = (ap.get("avatar_retire_action") or "none").strip().lower()
+    local_agent_id = ap.get("local_agent_id") or ""
+    note = ap.get("avatar_retire_note") or ""
+    if retire_action not in {"none", "lull", "suspend"}:
+        return None, "不支持的退休后动作"
+    agent_dir = _lingtai_agent_dir(address)
+    if not address or not agent_dir or not (agent_dir / ".agent.json").exists():
+        return None, f"找不到真实 LingTai agent：{address}"
+    hb = _heartbeat_info(agent_dir)
+    status = "retired_local_only"
+    if retire_action == "lull":
+        if hb.get("alive"):
+            (agent_dir / ".sleep").write_text("lingtai-simple-retire", encoding="utf-8")
+            status = "retired_sleep_signal_written"
+        else:
+            status = "retired_no_fresh_heartbeat_no_signal"
+    elif retire_action == "suspend":
+        if hb.get("alive"):
+            (agent_dir / ".suspend").write_text("lingtai-simple-retire", encoding="utf-8")
+            status = "retired_suspend_signal_written"
+        else:
+            status = "retired_no_fresh_heartbeat_no_signal"
+    affected = []
+    for ag in state.get("agents", []):
+        if (local_agent_id and ag.get("id") == local_agent_id) or ag.get("lingtai_address") == address:
+            ag["status"] = "已退休"
+            ag["lingtai_retired"] = True
+            ag["retired_at"] = now_iso()
+            ag["retire_note"] = note
+            affected.append(ag.get("id"))
+    event = {
+        "id": new_id("ltavatar"), "created_at": now_iso(),
+        "event": "retire", "address": address, "name": address,
+        "status": status, "retire_action": retire_action,
+        "local_agent_ids": affected, "working_dir": str(agent_dir),
+        "note": redact(note),
+    }
+    state.setdefault("lingtai_avatar_events", []).insert(0, event)
+    state["lingtai_avatar_events"] = state["lingtai_avatar_events"][:80]
+    log_event(state, f"真实 LingTai avatar 已退休/解绑：{address} ({status})", kind="lingtai_runtime")
+    return event, None
+
+
 def request_lingtai_avatar_spawn(state, payload):
     """Create a confirmation item for real same-network LingTai avatar spawn."""
     name = _safe_avatar_name(payload.get("name") or payload.get("avatar_name") or "")
@@ -1193,7 +1325,7 @@ def request_lingtai_avatar_spawn(state, payload):
     if not name:
         return None, "avatar 名称不合法：只能是单段名称，允许字母/数字/下划线/连字符，1-64 字符；不能含空格、点或斜杠。"
     if avatar_type != "shallow":
-        return None, "v0.13 先只接入真实 shallow avatar spawn；deep clone 需要更严格的资料复制审计，暂不开放。"
+        return None, "v0.14 先只接入真实 shallow avatar spawn；deep clone 需要更严格的资料复制审计，暂不开放。"
     if _mission_looks_too_short(mission) and not payload.get("confirm_mission"):
         return None, "avatar mission 太短或像测试；请写清楚它要长期负责什么，并传 confirm_mission=true。"
     root = _lingtai_network_path()
@@ -1392,11 +1524,22 @@ def set_agent_status(state, agent_id, action):
         agent["status"] = "待命"
         log_event(state, f"恢复灵：{agent['name']}")
     elif action == "delete":
-        # 删除需走确认队列（敏感）
+        # 绑定真实 LingTai agent 的本地卡片不是普通缓存：删除按钮改为“退休/解绑”确认闸，绝不删除真实目录。
+        if agent.get("lingtai_address"):
+            ap, err = request_lingtai_avatar_retire(state, {
+                "agent_id": agent_id,
+                "address": agent.get("lingtai_address"),
+                "retire_action": "none",
+                "note": "从 Simple 本地卡片删除入口触发：只退休/解绑，不删除真实 agent 目录。",
+            })
+            if err:
+                return None, err
+            return {"queued_approval": ap["id"], "mode": "retire_not_delete"}, None
+        # 未绑定真实地址的本地轻量卡片仍可按本地状态删除。
         ap = add_approval(state, {
             "action": "delete_agent",
-            "title": f"删除灵：{agent['name']}",
-            "detail": f"将删除灵 {agent['name']}（{agent['id']}）。删除需确认且不可自动撤回。",
+            "title": f"删除本地灵卡片：{agent['name']}",
+            "detail": f"将只删除 Simple 本地灵卡片 {agent['name']}（{agent['id']}）。不会删除任何真实 LingTai agent 目录。",
             "agent_id": agent_id,
         })
         return {"queued_approval": ap["id"]}, None
@@ -1418,7 +1561,7 @@ def add_approval(state, payload):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
@@ -1440,6 +1583,7 @@ def build_preview(action, payload):
         "rollback_apply": f"[rollback 预览 / 确认后会真实 git reset --hard]\n{detail}",
         "lingtai_lifecycle": f"[真实 LingTai 生命周期动作预览 / 确认后会写入 .sleep/.suspend/.interrupt/.clear signal 或执行 CPR]\n{detail}",
         "lingtai_avatar_spawn": f"[真实 LingTai avatar spawn 预览 / 确认后会创建同网 peer agent 目录、写 init.json/.prompt，并启动 lingtai-agent run]\n{detail}",
+        "lingtai_avatar_retire": f"[真实 LingTai avatar 退休/解绑预览 / 确认后不会删除目录；只做本地退休记录，并可选择写入 sleep/suspend signal]\n{detail}",
         "delete_agent": f"[删除灵预览]\n{detail}",
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
     }
@@ -1538,6 +1682,12 @@ def _apply_approved_action(state, ap):
             return err
         ap["result"] = result
         return None
+    if action == "lingtai_avatar_retire":
+        result, err = lingtai_avatar_retire_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        return None
     if action == "delete_agent" and ap.get("agent_id"):
         state["agents"] = [a for a in state["agents"] if a["id"] != ap["agent_id"]]
         log_event(state, "（本地状态）已删除灵")
@@ -1546,7 +1696,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.13 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.14 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -1759,7 +1909,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.13 当前状态：",
+        "圆酱，LingTai Simple v0.14 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -1925,7 +2075,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.13 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.14 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -1955,7 +2105,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.13（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.14（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -2501,7 +2651,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.13 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.14 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -3035,7 +3185,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.13 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.14 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -3056,10 +3206,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.13（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.14（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.13 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.14 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -3081,7 +3231,7 @@ def health_check():
     }
     return {
         "ok": all(checks.values()),
-        "version": "v0.13",
+        "version": "v0.14",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -3297,6 +3447,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/lingtai/collect": lambda s, p: collect_lingtai_mail_results(s, p),
             "/api/lingtai/lifecycle/request": lambda s, p: request_lingtai_lifecycle(s, p),
             "/api/lingtai/avatar/request": lambda s, p: request_lingtai_avatar_spawn(s, p),
+            "/api/lingtai/avatar/bind": lambda s, p: bind_lingtai_avatar(s, p),
+            "/api/lingtai/avatar/retire": lambda s, p: request_lingtai_avatar_retire(s, p),
             "/api/insight/generate": lambda s, p: generate_insights(s, p),
             "/api/soul/flow": lambda s, p: generate_soul_flow(s, p),
             "/api/agent/pause": lambda s, p: set_agent_status(s, p.get("agent_id"), "pause"),
@@ -3420,7 +3572,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.13 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.14 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
