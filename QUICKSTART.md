@@ -60,10 +60,10 @@ python3 scripts/self_check.py
 Expected output:
 
 ```text
-OK LingTai Simple v0.20 self-check passed
+OK LingTai Simple v0.21 self-check passed
 ```
 
-The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, and the v0.20 memory/skill read-only index and budget/cost guardrail panel. It also verifies `.secrets` is not readable through the memory endpoint.
+The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, and the v0.21 memory/skill read-only index and budget/cost guardrail panel, and v0.21 controlled worker dispatch/collection through a fake controller mailbox including WeChat-origin result aggregation. It also verifies `.secrets` is not readable through the memory endpoint.
 
 Developer optional checks:
 

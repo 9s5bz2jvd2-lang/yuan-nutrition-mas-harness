@@ -1,11 +1,11 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.20
+# 圆酱专属轻量版灵台 / LingTai Simple v0.21
 
-这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.20 在真实 WeChat MCP 桥接入口、LingTai 内部邮箱派发/回收、记忆/技能只读索引、Secret Vault health scan + restricted fallback、统一 Task Router 基础上，新增 **预算/成本面板（本地估算）**：模型/API 与 Claude Code L1/L2 在真实执行前会按本地价格表和上限做预算预检，越线时进入确认队列生成短时 budget override；成功执行后写入本地 cost ledger。它不连接供应商真实账单/余额，价格表需要用户按实际模型校准。
+这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.21 在真实 WeChat MCP 桥接入口、LingTai 内部邮箱派发/回收、记忆/技能只读索引、Secret Vault health scan + restricted fallback、统一 Task Router 基础上，新增 **预算/成本面板（本地估算）**：模型/API 与 Claude Code L1/L2 在真实执行前会按本地价格表和上限做预算预检，越线时进入确认队列生成短时 budget override；成功执行后写入本地 cost ledger。它不连接供应商真实账单/余额，价格表需要用户按实际模型校准。
 
 
-## v0.20：架构验收表（不许糊弄）
+## v0.21：架构验收表（不许糊弄）
 
-圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.20 继续用 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API 暴露真实验收状态：
+圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.21 继续用 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API 暴露真实验收状态：
 
 ```bash
 curl http://127.0.0.1:8765/api/architecture/status
@@ -13,10 +13,17 @@ curl http://127.0.0.1:8765/api/architecture/status
 
 UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partial / Missing`、已跑通证据、缺口和测试命令。原则是：**未真实跑通，不写已完成**。
 
-## v0.20 新增真实接入
+## v0.21 新增真实接入
 
 
-### -2. 预算/成本面板（v0.20 新增）
+### -3. 受控 worker 调度（v0.21 新增）
+
+- `/api/task/route` 识别 daemon / 分神 / Codex / Claude / avatar 类请求后，不再只停留在 handoff 文案；会创建 `worker_requests[]`、本地任务和 `worker_dispatch` 确认项。
+- 批准确认项后，Simple 会写入真实 LingTai 内部邮箱，把请求交给 controller agent（默认 `mimo-2-5-pro`，可用 `LINGTAI_SIMPLE_WORKER_CONTROLLER` 覆盖）。
+- `/api/lingtai/collect` 可按 `worker_request_id` 回收 controller 回信，更新 worker request / dispatch / task；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
+- 边界：Simple 自身不直接启动第二个微信 poller，也不绕过 daemon/Codex/Claude/avatar 的既有安全纪律；这是“确认闸 + controller mailbox + 回信汇总”的受控链路。
+
+### -2. 预算/成本面板（v0.21 新增）
 
 - `GET /api/cost/status`：读取本地估算成本状态、今日累计、provider/kind 分布、warnings 与最近 ledger。
 - `POST /api/cost/policy`：调整本地预算策略，包括 daily cap、provider 单次 cap、任务 cap、Claude Code run cap、长跑阈值、是否启用越线确认，以及是否清空本地 ledger。
@@ -27,14 +34,14 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 边界：这是本地 guardrail / 估算账本，不是供应商真实账单、余额查询或自动扣费审计；默认价格表只用于保守提醒，必须按实际 provider/model 校准。
 
 
-### -1. 统一 Task Router / WeChat runner contract（v0.20 保留）
+### -1. 统一 Task Router / WeChat runner contract（v0.21 保留）
 
 - `POST /api/task/route`：把一句话分类为普通本地任务、多 agent、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划。
 - `POST /api/wechat/bridge/pending`：返回 `ready_for_bridge` 的微信 outbox 项，供当前 LingTai WeChat MCP 桥接者发送；runner contract 固定为 `no_second_poller`。
 - `/api/wechat/bridge/incoming` 的默认普通消息现在走统一 Task Router，并在 inbox 记录 `route_id`，便于追踪“微信一句话 → 路由 → 本地任务/真实邮箱/回收/计划”的路径。
 - `confirm_dispatch=true` 时，router 可在 fake/真实 `.lingtai` 网络中写入真实内部邮箱 outbox；未确认时只创建本地任务并提示需要确认，避免误唤醒/占用真实 agent。
 
-边界：v0.20 不是独立微信 poller，也不会由本地 Simple 服务直接启动 daemon 或绕过 Claude Code/费用确认；代码苦力和 daemon 类任务只记录 handoff/计划，真实执行仍走对应受控入口。
+边界：v0.21 不是独立微信 poller，也不会由本地 Simple 服务直接启动 daemon 或绕过 Claude Code/费用确认；代码苦力和 daemon 类任务只记录 handoff/计划，真实执行仍走对应受控入口。
 
 ### 0. LingTai 记忆 / 技能只读索引（v0.17 新增）
 
@@ -112,7 +119,7 @@ python3 scripts/self_check.py
 
 ## 仍未完成
 
-- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.20 提供 pending outbox/runner contract）。
+- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.21 提供 pending outbox/runner contract）。
 - 完整 LingTai avatar spawn / delete 管理；v0.14 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。

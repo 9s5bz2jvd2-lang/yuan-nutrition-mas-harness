@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.20 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.21 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -173,6 +173,7 @@ function renderLingTaiRuntime() {
   const rt = STATE.lingtai_runtime || {};
   const rows = STATE.lingtai_dispatches || [];
   const replies = STATE.lingtai_mail_results || [];
+  const workers = STATE.worker_requests || [];
   const life = STATE.lingtai_lifecycle_events || [];
   const avatars = STATE.lingtai_avatar_events || [];
   const banner = `<div class="preview">运行态：${esc(rt.status || "unknown")} · sender=${esc(rt.sender || "human")} · reply_inbox=${esc(rt.reply_inbox || "mimo-2-5-pro")}<br>网络：${esc(rt.network_dir || "未找到")}<br>${esc(rt.note || "")}</div>
@@ -184,6 +185,11 @@ function renderLingTaiRuntime() {
       <button class="btn small warn" onclick="openLingTaiRetireModal()">退休/解绑 avatar</button>
       <button class="btn small ok" onclick="refreshLingTaiMemory()">刷新记忆/技能索引</button>
     </div>`;
+  const workerHtml = workers.length ? `<h4>受控 worker 调度请求</h4>` + workers.map(w => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">🧩 ${esc(w.label || w.kind || "worker")} · ${esc(w.id)}</span>${statusTag(w.status || "awaiting_approval")}</div>
+      <div class="row-sub">controller ${esc(w.controller || "")} · task ${esc(w.task_id || "")} · route ${esc(w.route_id || "")}<br>${esc(w.description || "")}${w.reply_preview ? "<br>回信摘要：" + esc(w.reply_preview) : ""}</div>
+    </div>`).join("") : "";
   const dispatches = rows.length ? `<h4>真实派发记录</h4>` + rows.map(d => `
     <div class="row">
       <div class="row-top"><span class="row-title">📮 ${esc(d.subject || d.mailbox_id)}</span>${statusTag(d.status || "queued_to_lingtai_outbox")}</div>
@@ -205,7 +211,7 @@ function renderLingTaiRuntime() {
       <div class="row-top"><span class="row-title">🧬 ${esc(e.event || "spawn")} · ${esc(e.name || e.address)}</span>${statusTag(e.boot_status || e.status || "started")}</div>
       <div class="row-sub">address ${esc(e.address || "")} · template ${esc(e.template_address || "")} · pid ${esc(String(e.pid || ""))} · ${esc(e.created_at || "")}<br>${esc(e.working_dir || "")}${e.note ? "<br>备注：" + esc(e.note) : ""}</div>
     </div>`).join("") : "";
-  el.innerHTML = banner + dispatches + replyHtml + lifeHtml + avatarHtml;
+  el.innerHTML = banner + workerHtml + dispatches + replyHtml + lifeHtml + avatarHtml;
 }
 
 
