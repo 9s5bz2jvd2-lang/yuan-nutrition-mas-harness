@@ -27,6 +27,18 @@ Validation added:
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
 - Expected output: `OK LingTai Simple v0.15 self-check passed`.
 
+
+## v0.15.1 Download-and-run packaging
+
+Added portable GitHub clone/run support so the project is not tied to the original local absolute path:
+
+- `run.sh` starts the local server from the repository root and opens `http://127.0.0.1:<port>/` when possible.
+- `QUICKSTART.md` documents clone, ZIP download, startup, self-check, demo state, real-integration boundaries, and safety rules.
+- README run instructions now use `git clone` + `./run.sh` instead of the original local development path.
+- Health check now treats git/Claude/GitHub/LingTai network as optional integration checks, so a ZIP download without `.git` can still start and report core UI health.
+
+This does not make unavailable integrations magically active: model calls, Claude Code, GitHub PR/merge, real WeChat bridge, and real LingTai mailbox dispatch still require the corresponding local tools, credentials, or existing LingTai runtime wiring. The self-check remains the primary downloadable-run validation gate.
+
 ## Summary
 
  v0.14 adds safe avatar management on top of v0.13: binding existing real agents into Simple cards, and confirmation-gated retire/unbind semantics that never delete real agent directories or call nirvana.

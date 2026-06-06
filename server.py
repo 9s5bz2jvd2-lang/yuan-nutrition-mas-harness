@@ -3420,8 +3420,9 @@ def health_check():
         "github_cli_available": shutil.which("gh") is not None,
         "lingtai_network_dir": _lingtai_network_path() is not None,
     }
+    required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir")
     return {
-        "ok": all(checks.values()),
+        "ok": all(checks.get(k) for k in required_checks),
         "version": "v0.15",
         "host": HOST,
         "port": PORT,

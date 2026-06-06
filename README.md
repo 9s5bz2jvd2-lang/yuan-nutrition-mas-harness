@@ -52,16 +52,20 @@
 - 真实 LingTai 内部邮箱派发：`POST /api/lingtai/dispatch`。
 - 真实 LingTai 回复回收：`POST /api/lingtai/collect`。
 - 真实 LingTai 生命周期确认闸：`POST /api/lingtai/lifecycle/request` → approve 后写 signal / CPR。
+- 真实 LingTai 记忆 / 技能只读索引：pad / knowledge / custom/shared skills / 最近凝蜕摘要只读可见。
 
-## 运行
+## 从 GitHub 下载运行
+
+完整步骤见 [`QUICKSTART.md`](QUICKSTART.md)。最小启动方式：
 
 ```bash
-cd /Users/huangzesen/work/projects/runyuan_wang/.lingtai/mimo-2-5-pro/projects/lingtai_simple_20260605/yuanjiang-lingtai-simple-repo
-python3 server.py
+git clone https://github.com/9s5bz2jvd2-lang/yuanjiang-lingtai-simple.git
+cd yuanjiang-lingtai-simple
+./run.sh
 # 打开 http://127.0.0.1:8765/
 ```
 
-也可双击：`启动圆酱灵台.command`。
+也可直接运行 `python3 server.py`；macOS 可双击：`启动圆酱灵台.command`。
 
 ## 自检
 
@@ -79,5 +83,6 @@ python3 scripts/self_check.py
 - 完整 LingTai avatar spawn / delete 管理；v0.14 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。
+- 公开发布/下载运行体验仍在继续打磨；当前已提供 `run.sh`、macOS `.command`、`QUICKSTART.md` 与 `scripts/self_check.py`。
 
 原则：没真实接通不说接通；能真实测试的都进 self-check。
