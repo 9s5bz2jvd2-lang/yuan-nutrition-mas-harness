@@ -1,6 +1,8 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.23
+# Yuan Nutrition MAS Harness v0.23
 
-这不是“壳”或只会摆按钮的 GUI，而是一个可运行的 **lightweight LingTai harness**：把微信/GUI 输入统一收进本地 harness run，再按 `intake → route → approval → dispatch → collect → return` 协议留下审计链。v0.23 在真实 WeChat MCP 桥接入口、LingTai 内部邮箱派发/回收、记忆/技能只读索引、Secret Vault restricted fallback、统一 Task Router、预算/成本面板、受控 worker 调度、scoped approval grants 基础上，新增 **Harness Run Protocol**：每条输入都会记录 route、approval、dispatch、worker_request、structured_result 与原路回传状态；controller/worker 回信必须带 `HARNESS_REPLY_JSON` 结构化结果，方便自动汇总 summary、artifacts、next_action 与 external_side_effects。
+**Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan on top of [LingTai](https://github.com/Lingtai-AI/lingtai). It is designed to make lightweight agent orchestration, API management, safety approvals, rollback, and structured task handoff easier for nutrition professionals and nutrition-AI workflows.
+
+This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.23 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, and scoped approval grants. It adds the **Harness Run Protocol**: every input records route, approval, dispatch, worker_request, structured_result, and return-channel state; controller/worker replies must include `HARNESS_REPLY_JSON` so summary, artifacts, next_action, and external_side_effects can be collected automatically.
 
 ## v0.23：Lightweight LingTai Harness（不是壳）
 
@@ -133,13 +135,13 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 完整步骤见 [`QUICKSTART.md`](QUICKSTART.md)。最小启动方式：
 
 ```bash
-git clone https://github.com/9s5bz2jvd2-lang/yuanjiang-lingtai-simple.git
-cd yuanjiang-lingtai-simple
+git clone https://github.com/9s5bz2jvd2-lang/yuan-nutrition-mas-harness.git
+cd yuan-nutrition-mas-harness
 ./run.sh
 # 打开 http://127.0.0.1:8765/
 ```
 
-也可直接运行 `python3 server.py`；macOS 可双击：`启动圆酱灵台.command`。
+You can also run `python3 server.py` directly; on macOS, double-click `Start Yuan Nutrition MAS Harness.command`.
 
 ## 自检
 

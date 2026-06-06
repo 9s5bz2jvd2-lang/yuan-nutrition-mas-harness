@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.23 — 本地原型服务器
+Yuan Nutrition MAS Harness v0.23 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
@@ -1152,7 +1152,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.23",
+            "name": "Yuan Nutrition MAS Harness v0.23",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -1247,7 +1247,7 @@ def normalize_state(state):
     """兼容旧版本 state.json：补齐 v0.23 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.23"
+    state["meta"]["name"] = "Yuan Nutrition MAS Harness v0.23"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -1633,7 +1633,7 @@ def dispatch_task_to_lingtai(state, payload):
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
         "【LingTai Simple v0.23 真实内部邮箱派活】\n\n"
-        f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
+        f"来源：Yuan Nutrition MAS Harness（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
         "请按真实 LingTai agent 能力执行；完成、卡住或需要确认时，请内部邮件回复 mimo-2-5-pro。\n"
@@ -3448,7 +3448,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.23 当前状态：",
+        "圆酱，Yuan Nutrition MAS Harness v0.23 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -3638,7 +3638,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.23（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> Yuan Nutrition MAS Harness v0.23（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -4757,7 +4757,7 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.23（示例模式）"
+    demo["meta"]["name"] = "Yuan Nutrition MAS Harness v0.23（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
     log_event(demo, "加载示例数据：圆酱专属灵台 v0.23 demo")
@@ -5516,7 +5516,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.23 — 本地原型")
+    print("  Yuan Nutrition MAS Harness v0.23 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

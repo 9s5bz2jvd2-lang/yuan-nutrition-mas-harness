@@ -1,4 +1,4 @@
-# LingTai Simple v0.23 Implementation Report
+# Yuan Nutrition MAS Harness v0.23 Implementation Report
 
 
 ## v0.23 Update — Lightweight LingTai Harness Run Protocol
@@ -41,7 +41,7 @@ New / changed endpoints:
 Validation added:
 
 - `scripts/self_check.py` now verifies scoped approval grants, ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
-- Expected output: `OK LingTai Simple v0.23 self-check passed`.
+- Expected output: `OK Yuan Nutrition MAS Harness v0.23 self-check passed`.
 
 Honest boundary:
 
@@ -73,7 +73,7 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.23 self-check passed`.
+- Expected output: `OK Yuan Nutrition MAS Harness v0.23 self-check passed`.
 
 
 ## v0.17.1 Download-and-run packaging
@@ -88,6 +88,9 @@ Added portable GitHub clone/run support so the project is not tied to the origin
 This does not make unavailable integrations magically active: model calls, Claude Code, GitHub PR/merge, real WeChat bridge, and real LingTai mailbox dispatch still require the corresponding local tools, credentials, or existing LingTai runtime wiring. The self-check remains the primary downloadable-run validation gate.
 
 ## Summary
+
+Yuan Nutrition MAS Harness is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan on top of [LingTai](https://github.com/Lingtai-AI/lingtai). It keeps LingTai's orchestration, approval, rollback, mailbox, and worker-handoff ideas, but packages them for nutrition-AI workflows and nutrition professionals.
+
 
  v0.14 adds safe avatar management on top of v0.13: binding existing real agents into Simple cards, and confirmation-gated retire/unbind semantics that never delete real agent directories or call nirvana.
 
@@ -141,7 +144,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.23 self-check passed
+OK Yuan Nutrition MAS Harness v0.23 self-check passed
 ```
 
 ## Boundaries

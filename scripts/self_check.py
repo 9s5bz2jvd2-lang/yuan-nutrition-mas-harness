@@ -375,7 +375,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.23' in wx['result']['reply_text'], wx
+        assert 'Yuan Nutrition MAS Harness v0.23' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -460,7 +460,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.23 self-check passed')
+        print('OK Yuan Nutrition MAS Harness v0.23 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

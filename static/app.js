@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.23 — 前端逻辑（纯原生 JS，无依赖） */
+/* Yuan Nutrition MAS Harness v0.23 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -693,7 +693,7 @@ function openMultiAgentModal() {
   const opts = (STATE.agents || []).map(a => `<label class="checkline"><input type="checkbox" class="orch-agent" value="${a.id}" /> ${esc(a.name)}｜${esc(a.role)}</label>`).join("") || `<div class="muted">不选也可以：系统会自动创建主控洞察灵、执行落地灵、审校回环灵。</div>`;
   openModal("多 agent / 子灵编排", `
     <p class="hint">真实本地编排：创建或选择多个子灵，把一个目标拆成洞察、执行、审校、回环任务，并记录批次。</p>
-    <textarea id="orch-objective" placeholder="例：把 LingTai Simple 做成圆酱专属轻量版灵台，先补多 agent / 洞察 / 心流"></textarea>
+    <textarea id="orch-objective" placeholder="例：把 LingTai Simple 做成Yuan Nutrition MAS Harness，先补多 agent / 洞察 / 心流"></textarea>
     <div class="form-label">选择参与子灵（可不选，自动创建/选择）</div>
     <div class="checks">${opts}</div>
     <button class="btn primary" onclick="submitMultiAgent()">生成多 agent 编排</button>
@@ -1050,7 +1050,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.23 — lightweight LingTai harness run protocol</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
+    <div class="preview">这是Yuan Nutrition MAS Harness <b>v0.23 — lightweight LingTai harness run protocol</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
@@ -1058,7 +1058,7 @@ function openDocsModal() {
       <li>敏感动作进入「确认队列」，先预览；rollback、Claude Code L1 只读分析、L2 本地改码已是真实链路；L3 commit 已接入；L4 PR / L5 merge 已真实接入确认闸。</li>
       <li>点「一键收功」生成可返回的阶段小结。</li>
     </ol>
-    <div class="preview">Mac 双击启动：运行目录里的「启动圆酱灵台.command」。</div>
+    <div class="preview">Mac 双击启动：运行目录里的「Start Yuan Nutrition MAS Harness.command」。</div>
   `);
 }
 

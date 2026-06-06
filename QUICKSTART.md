@@ -1,4 +1,4 @@
-# LingTai Simple Quickstart / 轻量版灵台快速运行
+# Yuan Nutrition MAS Harness Quickstart
 
 This repository is designed to be runnable after a normal GitHub clone/download.
 It uses Python standard library for the local server and vanilla HTML/CSS/JS for the UI.
@@ -17,8 +17,8 @@ No `pip install` is required for the core local UI.
 ## 2. Download / 下载
 
 ```bash
-git clone https://github.com/9s5bz2jvd2-lang/yuanjiang-lingtai-simple.git
-cd yuanjiang-lingtai-simple
+git clone https://github.com/9s5bz2jvd2-lang/yuan-nutrition-mas-harness.git
+cd yuan-nutrition-mas-harness
 ```
 
 If you downloaded a ZIP from GitHub, unzip it and open a terminal in the extracted folder.
@@ -46,7 +46,7 @@ http://127.0.0.1:8765/
 On macOS you may also double-click:
 
 ```text
-启动圆酱灵台.command
+Start Yuan Nutrition MAS Harness.command
 ```
 
 ## 4. Self-check / 自检
@@ -60,7 +60,7 @@ python3 scripts/self_check.py
 Expected output:
 
 ```text
-OK LingTai Simple v0.23 self-check passed
+OK Yuan Nutrition MAS Harness v0.23 self-check passed
 ```
 
 The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, v0.23 harness run protocol, scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including HARNESS_REPLY_JSON structured result parsing and WeChat-origin result aggregation. It also verifies `.secrets` is not readable through the memory endpoint.
