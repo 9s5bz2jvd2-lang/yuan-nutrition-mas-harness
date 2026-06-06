@@ -1,8 +1,8 @@
-# LingTai Simple v0.15 Implementation Report
+# LingTai Simple v0.16 Implementation Report
 
-## v0.15 Update — real LingTai memory / skill index
+## v0.16 Update — real LingTai memory / skill index
 
-v0.15 adds a read-only durable-store index for the current real LingTai agent. Simple can now show what the agent remembers and what reusable skills it has, without exposing secrets, mailboxes, logs, or arbitrary filesystem paths.
+v0.16 adds a read-only durable-store index for the current real LingTai agent. Simple can now show what the agent remembers and what reusable skills it has, without exposing secrets, mailboxes, logs, or arbitrary filesystem paths.
 
 New endpoints:
 
@@ -25,10 +25,10 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.15 self-check passed`.
+- Expected output: `OK LingTai Simple v0.16 self-check passed`.
 
 
-## v0.15.1 Download-and-run packaging
+## v0.16.1 Download-and-run packaging
 
 Added portable GitHub clone/run support so the project is not tied to the original local absolute path:
 
@@ -93,7 +93,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.15 self-check passed
+OK LingTai Simple v0.16 self-check passed
 ```
 
 ## Boundaries
@@ -112,3 +112,13 @@ OK LingTai Simple v0.15 self-check passed
 - `POST /api/lingtai/avatar/retire` queues a confirmation item for retire/unbind. Approval marks local bound cards retired and optionally writes `.sleep` or `.suspend` if requested and heartbeat is fresh.
 - Bound-card delete now routes to `lingtai_avatar_retire`; raw filesystem deletion remains intentionally absent.
 - Self-check validates bind, delete-to-retire routing, approval execution, and confirms the fake real agent directory remains present.
+
+## v0.16 架构验收矩阵
+
+新增：
+
+- `ARCHITECTURE_ACCEPTANCE_MATRIX.md`：把 `../ARCHITECTURE_EXPERT_DISCUSSION.md` 的 WeChat Gate、Simple Frontend、Task Router、Agent Manager、Model/API Registry、Secret Vault、Approval Queue、Worker Pool、Memory/Skills/Molt、Rollback，以及“GitHub 下载即可运行”逐项映射为 `Done / Partial / Missing`。
+- `GET /api/architecture/status`：本地只读 API，返回机器可读验收状态、证据、缺口、测试命令与下一批优先实现项。
+- 前端新增 **📋 架构验收表** 大按钮和 modal。
+
+诚实边界：v0.16 不是宣称所有架构要求已完成，而是把已完成、部分完成、未完成拆开亮出来；下一步优先补 standalone WeChat bridge runner、统一 Task Router、Secret Vault health 扫描和累计预算/成本面板。

@@ -1,17 +1,28 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.15
+# 圆酱专属轻量版灵台 / LingTai Simple v0.16
 
-这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.15 在真实邮箱派发、回复回收、生命周期确认闸和 avatar 管理基础上，新增 **真实 LingTai 记忆 / 技能只读索引**：可以从当前 agent 文件系统读取 pad、knowledge、custom/shared skills 与最近凝蜕摘要，让普通用户看见“这个灵记住了什么、会什么”；仍然不读 secrets、mailbox、logs，也不写任何记忆文件。
+这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.16 在真实邮箱派发、回复回收、生命周期确认闸和 avatar 管理基础上，新增 **真实 LingTai 记忆 / 技能只读索引**：可以从当前 agent 文件系统读取 pad、knowledge、custom/shared skills 与最近凝蜕摘要，让普通用户看见“这个灵记住了什么、会什么”；仍然不读 secrets、mailbox、logs，也不写任何记忆文件。
 
-## v0.15 新增真实接入
 
-### 0. LingTai 记忆 / 技能只读索引（v0.15 新增）
+## v0.16：架构验收表（不许糊弄）
+
+圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.16 新增 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API：
+
+```bash
+curl http://127.0.0.1:8765/api/architecture/status
+```
+
+UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partial / Missing`、已跑通证据、缺口和测试命令。原则是：**未真实跑通，不写已完成**。
+
+## v0.16 新增真实接入
+
+### 0. LingTai 记忆 / 技能只读索引（v0.16 新增）
 
 - `GET /api/lingtai/memory`：只读扫描当前真实 agent 的 durable stores，返回 pad、lingtai character、CURRENT_PROJECTS、knowledge、custom skills、shared skills、最近 molt summaries 的索引和计数。
 - `POST /api/lingtai/memory/scan`：把一次扫描摘要写入 Simple 本地状态，便于 GUI 展示最近索引结果。
 - `POST /api/lingtai/memory/read`：只允许读取白名单根目录下的文本文件，并限制输出长度；拒绝 `.secrets`、mailbox、logs、隐藏文件和任意路径穿越。
 - GUI 新增“记忆 / 技能索引”大按钮与运行时卡片，展示这个灵的长期记忆、技能和凝蜕摘要。
 
-边界：v0.15 只读，不修改 pad/knowledge/skills/molt；不把秘密、邮箱正文或日志暴露给 Simple；不会把索引内容自动塞进模型上下文。
+边界：v0.16 只读，不修改 pad/knowledge/skills/molt；不把秘密、邮箱正文或日志暴露给 Simple；不会把索引内容自动塞进模型上下文。
 
 ## v0.14 新增真实接入
 

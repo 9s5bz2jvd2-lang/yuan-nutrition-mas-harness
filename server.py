@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.15 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.16 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.15 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
+- v0.16 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.15 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.16 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -486,7 +486,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.15",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.16",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -496,14 +496,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.15 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.16 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 运行记录（v0.15 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "cc_runs": [],          # Claude Code 运行记录（v0.16 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -513,7 +513,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.15 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.16 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -551,10 +551,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.15 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.16 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.15"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.16"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -619,7 +619,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.15 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.16 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -924,7 +924,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.15 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.16 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -933,7 +933,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.15")
+                                    via="lingtai-simple-v0.16")
     if err:
         return None, err
     dispatch = {
@@ -1708,7 +1708,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.15 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.16 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -1921,7 +1921,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.15 当前状态：",
+        "圆酱，LingTai Simple v0.16 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -2087,7 +2087,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.15 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.16 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -2117,7 +2117,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.15（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.16（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -2663,7 +2663,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.15 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.16 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -3197,7 +3197,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.15 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.16 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -3218,10 +3218,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.15（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.16（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.15 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.16 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -3405,6 +3405,147 @@ def record_lingtai_memory_scan(state, payload=None):
     return scan, None if scan.get("ok") else scan.get("error")
 
 
+# --------------------------------------------------------------------------
+# 架构验收矩阵：把 ARCHITECTURE_EXPERT_DISCUSSION.md 的要求变成可查询状态
+# --------------------------------------------------------------------------
+ARCHITECTURE_ACCEPTANCE_ITEMS = [
+    {
+        "id": "A01",
+        "module": "WeChat Gate",
+        "requirement": "接收圆酱微信消息，分类普通任务/子灵任务/确认/取消暂停收功，自动 ACK，并原路返回结果；子 agent 不得绕过主控外发。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:86-99",
+        "status": "partial",
+        "evidence": "已实现 /api/wechat/bridge/incoming、/api/wechat/bridge/mark_sent 与 /api/wechat/submit；真实收发由现有 LingTai WeChat MCP 作为唯一桥接者完成，避免第二 poller。",
+        "gap": "尚未提供独立常驻 bridge runner；自动 ACK 阶段状态仍以 bridge 返回文本/本地状态为主。",
+        "test": "python3 scripts/self_check.py（覆盖 bridge incoming/mark_sent 路径）；人工桥接需由当前 LingTai WeChat MCP 调用。",
+    },
+    {
+        "id": "A02",
+        "module": "Simple Frontend",
+        "requirement": "本地傻瓜界面：最多 5 灵状态卡，新建/暂停/删除/改任务，任务队列、context 压力、API/成本、收功、Time Machine、确认队列。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:101-113",
+        "status": "done",
+        "evidence": "static/index.html + app.js 已提供大按钮、状态卡、任务停车场、context 压力、模型/API、确认队列、收功、Rollback、LingTai runtime 与记忆/技能索引。",
+        "gap": "不是完整开发者调试台；这是 v0 的有意边界。",
+        "test": "python3 scripts/self_check.py；node --check static/app.js；浏览器打开 http://127.0.0.1:8765/。",
+    },
+    {
+        "id": "A03",
+        "module": "Task Router / Orchestrator",
+        "requirement": "把一句话变成任务，决定主控/长期子灵/临时分神/Claude Code，收集多 agent 结果，管理停车场、摘要与续接入口。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:115-128",
+        "status": "partial",
+        "evidence": "已有 /api/task/assign、/api/agent/orchestrate、洞察、心流、收功、LingTai mailbox dispatch/collect；敏感任务进入 Approval Queue。",
+        "gap": "尚未做到完整自动路由 daemon/Codex/Claude/real avatar 的统一调度与自动汇总回微信；多 agent 编排仍偏本地状态+可选 mailbox 派发。",
+        "test": "python3 scripts/self_check.py（覆盖本地编排、真实 mailbox dispatch fake 网络与回复回收）。",
+    },
+    {
+        "id": "A04",
+        "module": "Agent Manager",
+        "requirement": "最多 5 个 resident agents；配置名字、模型/API、能力/技能、权限；暂停/唤醒/删除；健康、context 压力、最近任务。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:130-143",
+        "status": "partial",
+        "evidence": "MAX_AGENTS=5，本地 agent 卡片、暂停/恢复/删除确认；真实 LingTai agents 发现、绑定、shallow spawn、退休/解绑、lull/suspend/interrupt/clear/CPR 确认闸。",
+        "gap": "能力/技能/权限与模型选择还未完整绑定到真实 resident agent init/preset；删除真实 agent 仍只支持安全退休/解绑，不做销毁。",
+        "test": "python3 scripts/self_check.py（覆盖 fake LingTai avatar spawn/bind/retire/lifecycle）。",
+    },
+    {
+        "id": "A05",
+        "module": "Model/API Registry",
+        "requirement": "首批 GPT/OpenAI-compatible、MiMo、DeepSeek、MiniMax、GLM、自定义 base_url+api_key+model；连接测试、状态、能力标签、cost 上限/告警。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:145-167",
+        "status": "partial",
+        "evidence": "PROVIDER_CATALOG 已含 6 类供应商；API key 进 Keychain；/api/model/test 可对 OpenAI-compatible chat/completions 做真实调用，需 confirm_cost；单次 max_tokens/timeout 有硬上限。",
+        "gap": "MiMo/MiniMax 端点需用户填写兼容 base_url；还没有按 provider/任务维度的累计预算、余额估算或价格表。",
+        "test": "python3 scripts/self_check.py（验证未确认费用会拒绝、key 不落盘）；真实模型测试需用户显式 confirm_cost。",
+    },
+    {
+        "id": "A06",
+        "module": "Secret Vault",
+        "requirement": "Mac Keychain 优先；fallback .secrets/env slot 权限受限；启动扫描明文 key 风险；日志/报告/prompt/微信回复脱敏。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:169-182",
+        "status": "partial",
+        "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；self_check 用假 key 验证不落盘；基础 secret scan 已用于提交前。",
+        "gap": "尚未实现受限 .secrets/env fallback；启动时明文 key 风险扫描还未作为 health check 结构化展示。",
+        "test": "python3 scripts/self_check.py（Keychain 可用性与 state 脱敏）；提交前高置信秘密扫描。",
+    },
+    {
+        "id": "A07",
+        "module": "Approval Queue",
+        "requirement": "外发、commit/push/PR/merge、删除/公开/权限、rollback、高成本 API、Claude Code 写操作、导出日志截图报告均需确认；显示 actor/action/scope/diff/message/cost。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:184-202",
+        "status": "partial",
+        "evidence": "已有确认队列与 approve/deny；覆盖 rollback、delete_agent、sensitive task、Claude L3/L4/L5、LingTai lifecycle/avatar、PR/merge 等；UI 显示说明和预览文本。",
+        "gap": "还没有 allow-once/allow-for-task 的细粒度授权；日志/截图/报告导出确认尚未单独实现；部分真实 API 调用采用 confirm_cost checkbox 而非队列项。",
+        "test": "python3 scripts/self_check.py；destructive rollback/commit smoke 在隔离副本中验证。",
+    },
+    {
+        "id": "A08",
+        "module": "Worker / Sub-agent Pool",
+        "requirement": "长期助手、临时分析、代码苦力三类工作体；界面不暴露复杂术语；Claude/Codex 权限分级。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:204-216",
+        "status": "partial",
+        "evidence": "UI 使用“灵/多 agent/代码苦力”等普通说法；真实 shallow avatar spawn/bind/retire；Claude Code L1-L5 已接入不同权限和确认闸。",
+        "gap": "临时 daemon/Codex worker 尚未通过 Simple UI/API 真正发起；长期助手技能/模型权限仍未全量写入真实 agent 配置。",
+        "test": "python3 scripts/self_check.py；Claude Code 真实任务需本机 claude CLI 和显式确认。",
+    },
+    {
+        "id": "A09",
+        "module": "Memory / Skills / Knowledge / Molt",
+        "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
+        "status": "done",
+        "evidence": "v0.16 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
+        "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
+    },
+    {
+        "id": "A10",
+        "module": "Rollback / Time Machine",
+        "requirement": "创建安全点、查看 snapshot、preview diff、二次确认后 rollback apply；醒目标注不能撤回外部副作用。",
+        "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:234-246",
+        "status": "done",
+        "evidence": "已实现 /api/rollback/snapshot、/api/rollback/preview、/api/rollback/request；批准后真实 git reset --hard，并先写 safety ref；README/UI 标明外部副作用不可回滚。",
+        "gap": "仅覆盖本仓库 tracked/unignored 文件；不覆盖 VM/外部系统/已发消息。",
+        "test": "python3 scripts/self_check.py；隔离 /tmp destructive rollback smoke。",
+    },
+    {
+        "id": "A11",
+        "module": "GitHub runnable packaging",
+        "requirement": "任何人可从 GitHub 下载并实际运行。",
+        "source": "圆酱 WeChat d53c53f8-8822-4f74-a1a9-da09c93d9cc0",
+        "status": "done",
+        "evidence": "已新增 run.sh、QUICKSTART.md，README 改为 clone/ZIP 运行；health 在无 .git 的 ZIP-like 目录中仍可启动并返回 ok。",
+        "gap": "git Time Machine/Claude/GH/LingTai runtime 等高级能力仍需本机具备对应工具/配置；Quickstart 已说明。",
+        "test": "rsync --exclude .git 到 /tmp 后 LINGTAI_SIMPLE_PORT=8899 ./run.sh，/api/health ok。",
+    },
+]
+
+
+def architecture_acceptance_status():
+    """Return the current honest implementation matrix for the architecture discussion."""
+    counts = {"done": 0, "partial": 0, "missing": 0}
+    for item in ARCHITECTURE_ACCEPTANCE_ITEMS:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    return {
+        "ok": True,
+        "version": "v0.16",
+        "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
+        "summary": {
+            "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
+            **counts,
+            "rule": "只有已真实跑通并有测试/证据的能力才标 done；未跑通一律 partial/missing。",
+        },
+        "items": ARCHITECTURE_ACCEPTANCE_ITEMS,
+        "next_recommended_work": [
+            "补 standalone WeChat bridge runner：不启动第二 poller，只消费当前 LingTai MCP 桥接出的消息并负责 ACK/回传。",
+            "把 Task Router 升级为统一调度器：普通任务/真实 avatar/daemon/Claude/Codex/mailbox 派发与结果汇总。",
+            "补 Secret Vault health 扫描：启动时发现明文 key 风险并给迁移提示。",
+            "补累计预算/成本面板：provider/任务维度 cost cap、长跑告警与确认队列联动。",
+        ],
+    }
+
+
 def health_check():
     """本地健康检查：只读，不触发外部动作。"""
     checks = {
@@ -3423,7 +3564,7 @@ def health_check():
     required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.15",
+        "version": "v0.16",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -3455,7 +3596,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.12"
+    server_version = "LingTaiSimple/0.16"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -3531,6 +3672,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rollback_preview(state))
         if route == "/api/health":
             return self._send_json(health_check())
+        if route == "/api/architecture/status":
+            return self._send_json(architecture_acceptance_status())
         if route == "/api/lingtai/agents":
             return self._send_json({"agents": list_lingtai_agents(), "network_dir": LINGTAI_NETWORK_DIR})
         if route == "/api/lingtai/memory":
@@ -3770,7 +3913,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.15 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.16 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.15 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.16 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -85,12 +85,17 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.15', health
+        assert health['version']=='v0.16', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
         boundaries=' '.join(health['boundaries'])
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
+        arch=req('/api/architecture/status')
+        assert arch['ok'] and arch['version']=='v0.16' and arch['summary']['total'] >= 10, arch
+        assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
+        assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
+        assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
         mem=req('/api/lingtai/memory')
         assert mem['ok'] and mem['counts']['pad'] >= 2 and mem['counts']['knowledge'] >= 1 and mem['counts']['skills'] >= 2, mem
         scan=req('/api/lingtai/memory/scan', {})
@@ -228,7 +233,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.15' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.16' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -272,7 +277,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.15 self-check passed')
+        print('OK LingTai Simple v0.16 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
