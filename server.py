@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.19 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.20 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.19 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
+- v0.20 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.19 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.20 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -31,7 +31,7 @@ import threading
 import ctypes
 import ctypes.util
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
@@ -97,6 +97,22 @@ KEYCHAIN_DISABLED = os.environ.get("LINGTAI_SIMPLE_DISABLE_KEYCHAIN", "").strip(
 # 真实模型调用的安全上限（避免误操作烧钱）。
 MODEL_CALL_TIMEOUT = 30          # 秒
 MODEL_CALL_MAX_TOKENS = 256      # 单次测试回复上限
+
+# 累计预算 / 成本面板（v0.20）：所有金额均是本地估算值，不连接供应商账单。
+# 单位：USD。价格表只用于“先拦截、先提醒”的保守估算；用户可在后续版本改成自己的真实价格表。
+DEFAULT_DAILY_COST_CAP_USD = 1.00
+DEFAULT_PROVIDER_CALL_CAP_USD = 0.05
+DEFAULT_TASK_COST_CAP_USD = 0.25
+DEFAULT_CC_RUN_CAP_USD = 0.50
+DEFAULT_LONG_RUN_SECONDS = 15 * 60
+DEFAULT_PROVIDER_PRICE_PER_1M = {
+    "openai": {"input": 5.00, "output": 15.00, "note": "默认保守估算；请按实际模型价格调整。"},
+    "deepseek": {"input": 0.55, "output": 2.19, "note": "默认估算；不同模型/缓存价格不同。"},
+    "glm": {"input": 0.30, "output": 0.30, "note": "默认低价估算；不同 GLM 模型价格不同。"},
+    "mimo": {"input": 1.00, "output": 1.00, "note": "未知供应商价格，占位估算。"},
+    "minimax": {"input": 1.00, "output": 1.00, "note": "未知供应商价格，占位估算。"},
+    "custom": {"input": 1.00, "output": 1.00, "note": "自定义供应商占位估算。"},
+}
 
 # git Time Machine / rollback：只在本 repo 内操作，外部副作用无法回滚。
 SNAPSHOT_REF_PREFIX = "refs/lingtai-simple/snapshots"
@@ -812,6 +828,295 @@ def real_model_call(base_url, model, api_key, prompt, max_tokens=MODEL_CALL_MAX_
     }, None
 
 
+# --------------------------------------------------------------------------
+# 累计预算 / 成本面板（v0.20）
+# --------------------------------------------------------------------------
+
+def _float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _money(value):
+    return round(float(value or 0.0), 6)
+
+
+def _today_key():
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _parse_iso(ts):
+    try:
+        return datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _cost_policy(state):
+    base = default_state()["cost_policy"]
+    policy = state.setdefault("cost_policy", base.copy())
+    for k, v in base.items():
+        policy.setdefault(k, v)
+    policy.setdefault("provider_price_per_1m", DEFAULT_PROVIDER_PRICE_PER_1M)
+    policy.setdefault("overrides", [])
+    return policy
+
+
+def public_cost_policy(state):
+    policy = _cost_policy(state)
+    return {
+        "enabled": bool(policy.get("enabled", True)),
+        "currency": "USD",
+        "daily_cap_usd": _money(_float(policy.get("daily_cap_usd"), DEFAULT_DAILY_COST_CAP_USD)),
+        "provider_call_cap_usd": _money(_float(policy.get("provider_call_cap_usd"), DEFAULT_PROVIDER_CALL_CAP_USD)),
+        "task_cap_usd": _money(_float(policy.get("task_cap_usd"), DEFAULT_TASK_COST_CAP_USD)),
+        "cc_run_cap_usd": _money(_float(policy.get("cc_run_cap_usd"), DEFAULT_CC_RUN_CAP_USD)),
+        "long_run_seconds": int(_float(policy.get("long_run_seconds"), DEFAULT_LONG_RUN_SECONDS)),
+        "over_cap_requires_approval": bool(policy.get("over_cap_requires_approval", True)),
+        "provider_price_per_1m": policy.get("provider_price_per_1m", DEFAULT_PROVIDER_PRICE_PER_1M),
+        "active_overrides": _active_budget_overrides(state),
+    }
+
+
+def _price_for_provider(state, provider_id):
+    policy = _cost_policy(state)
+    prices = policy.get("provider_price_per_1m") or DEFAULT_PROVIDER_PRICE_PER_1M
+    item = dict(DEFAULT_PROVIDER_PRICE_PER_1M.get(provider_id) or DEFAULT_PROVIDER_PRICE_PER_1M.get("custom", {}))
+    item.update(prices.get(provider_id) or {})
+    return {"input": _float(item.get("input"), 1.0),
+            "output": _float(item.get("output"), 1.0),
+            "note": item.get("note") or "local estimate"}
+
+
+def _usage_tokens(usage, prompt="", max_tokens=MODEL_CALL_MAX_TOKENS):
+    usage = usage or {}
+    input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+    output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    total_tokens = usage.get("total_tokens")
+    if input_tokens is None:
+        input_tokens = max(1, len(prompt or "") // 4)
+    if output_tokens is None:
+        if total_tokens and total_tokens >= input_tokens:
+            output_tokens = max(0, int(total_tokens) - int(input_tokens))
+        else:
+            output_tokens = max_tokens
+    return int(input_tokens or 0), int(output_tokens or 0)
+
+
+def estimate_model_cost_usd(state, provider_id, usage=None, prompt="", max_tokens=MODEL_CALL_MAX_TOKENS):
+    price = _price_for_provider(state, provider_id)
+    input_tokens, output_tokens = _usage_tokens(usage, prompt=prompt, max_tokens=max_tokens)
+    cost = (input_tokens / 1_000_000.0) * price["input"] + (output_tokens / 1_000_000.0) * price["output"]
+    return _money(cost), {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "price_per_1m_input": price["input"],
+        "price_per_1m_output": price["output"],
+        "price_note": price.get("note"),
+        "estimated": usage is None,
+    }
+
+
+def _active_budget_overrides(state):
+    now = datetime.now(timezone.utc)
+    active = []
+    overrides = _cost_policy(state).setdefault("overrides", [])
+    kept = []
+    for ov in overrides:
+        expires = _parse_iso(ov.get("expires_at"))
+        if expires and expires < now:
+            continue
+        kept.append(ov)
+        active.append({k: ov.get(k) for k in ("id", "kind", "provider_id", "task_id", "estimated_usd", "reason", "expires_at")})
+    if len(kept) != len(overrides):
+        _cost_policy(state)["overrides"] = kept
+    return active
+
+
+def _has_budget_override(state, *, kind, provider_id=None, task_id=None):
+    for ov in _active_budget_overrides(state):
+        if ov.get("kind") not in (kind, "any"):
+            continue
+        if ov.get("provider_id") and provider_id and ov.get("provider_id") != provider_id:
+            continue
+        if ov.get("task_id") and task_id and ov.get("task_id") != task_id:
+            continue
+        return True
+    return False
+
+
+def cost_status(state):
+    policy = public_cost_policy(state)
+    today = _today_key()
+    ledger = state.setdefault("cost_ledger", [])
+    today_rows = [r for r in ledger if (r.get("created_at") or "")[:10] == today]
+    today_total = _money(sum(_float(r.get("estimated_usd"), 0.0) for r in today_rows))
+    by_provider = {}
+    by_kind = {}
+    for r in today_rows:
+        provider = r.get("provider_id") or "(none)"
+        kind = r.get("kind") or "unknown"
+        by_provider[provider] = _money(by_provider.get(provider, 0.0) + _float(r.get("estimated_usd"), 0.0))
+        by_kind[kind] = _money(by_kind.get(kind, 0.0) + _float(r.get("estimated_usd"), 0.0))
+    warnings = []
+    daily_cap = _float(policy.get("daily_cap_usd"), DEFAULT_DAILY_COST_CAP_USD)
+    if daily_cap > 0:
+        ratio = today_total / daily_cap
+        if ratio >= 1:
+            warnings.append({"severity": "high", "kind": "daily_cap_exceeded", "message": f"今日估算成本 ${today_total:.4f} 已超过日上限 ${daily_cap:.4f}"})
+        elif ratio >= 0.8:
+            warnings.append({"severity": "medium", "kind": "daily_cap_near", "message": f"今日估算成本 ${today_total:.4f} 已接近日上限 ${daily_cap:.4f}"})
+    long_run_seconds = int(_float(policy.get("long_run_seconds"), DEFAULT_LONG_RUN_SECONDS))
+    now = datetime.now(timezone.utc)
+    for r in state.get("cc_runs", []):
+        if r.get("status") == "运行中":
+            started = _parse_iso(r.get("started_at") or r.get("created_at"))
+            if started and (now - started).total_seconds() > long_run_seconds:
+                warnings.append({"severity": "medium", "kind": "long_running_cc", "message": f"Claude Code run {r.get('id')} 已运行超过 {long_run_seconds}s"})
+    pending_budget = [a for a in state.get("approvals", []) if a.get("action") == "budget_override" and a.get("status") == "待确认"]
+    return {
+        "currency": "USD",
+        "today": today,
+        "today_total_usd": today_total,
+        "daily_cap_usd": _money(daily_cap),
+        "by_provider": by_provider,
+        "by_kind": by_kind,
+        "ledger_count": len(ledger),
+        "pending_budget_approvals": len(pending_budget),
+        "warnings": warnings,
+        "last_entries": ledger[:10],
+    }
+
+
+def record_cost_event(state, *, kind, provider_id="", task_id="", estimated_usd=0.0, usage=None, source="local_estimate", note="", metadata=None):
+    entry = {
+        "id": new_id("cost"),
+        "created_at": now_iso(),
+        "kind": kind,
+        "provider_id": provider_id or "",
+        "task_id": task_id or "",
+        "estimated_usd": _money(estimated_usd),
+        "currency": "USD",
+        "usage": usage or None,
+        "source": source,
+        "note": redact(note or ""),
+        "metadata": metadata or {},
+    }
+    state.setdefault("cost_ledger", []).insert(0, entry)
+    state["cost_ledger"] = state["cost_ledger"][:300]
+    log_event(state, f"成本账本新增：{kind} / {provider_id or '-'} ≈ ${entry['estimated_usd']:.6f}", kind="cost")
+    return entry
+
+
+def _pending_budget_approval_exists(state, *, kind, provider_id=None, task_id=None):
+    for ap in state.get("approvals", []):
+        if ap.get("action") != "budget_override" or ap.get("status") != "待确认":
+            continue
+        if ap.get("cost_kind") != kind:
+            continue
+        if provider_id and ap.get("cost_provider_id") != provider_id:
+            continue
+        if task_id and ap.get("cost_task_id") != task_id:
+            continue
+        return ap
+    return None
+
+
+def budget_preflight(state, *, kind, provider_id="", task_id="", estimated_usd=0.0, note=""):
+    policy = _cost_policy(state)
+    if not policy.get("enabled", True):
+        return None
+    estimated_usd = _money(estimated_usd)
+    if estimated_usd <= 0:
+        return None
+    if _has_budget_override(state, kind=kind, provider_id=provider_id, task_id=task_id):
+        return None
+    reasons = []
+    daily_cap = _float(policy.get("daily_cap_usd"), DEFAULT_DAILY_COST_CAP_USD)
+    today_total = cost_status(state).get("today_total_usd", 0.0)
+    if daily_cap > 0 and today_total + estimated_usd > daily_cap:
+        reasons.append(f"今日累计 ${today_total:.4f} + 本次估算 ${estimated_usd:.4f} 将超过日上限 ${daily_cap:.4f}")
+    if kind == "model_call":
+        cap = _float(policy.get("provider_call_cap_usd"), DEFAULT_PROVIDER_CALL_CAP_USD)
+        if cap > 0 and estimated_usd > cap:
+            reasons.append(f"本次模型调用估算 ${estimated_usd:.4f} 超过单次 provider 上限 ${cap:.4f}")
+    if kind.startswith("claude_code"):
+        cap = _float(policy.get("cc_run_cap_usd"), DEFAULT_CC_RUN_CAP_USD)
+        if cap > 0 and estimated_usd > cap:
+            reasons.append(f"本次 Claude Code 预留 ${estimated_usd:.4f} 超过单次 CC 上限 ${cap:.4f}")
+    if task_id:
+        cap = _float(policy.get("task_cap_usd"), DEFAULT_TASK_COST_CAP_USD)
+        task_total = sum(_float(r.get("estimated_usd"), 0.0) for r in state.get("cost_ledger", []) if r.get("task_id") == task_id)
+        if cap > 0 and task_total + estimated_usd > cap:
+            reasons.append(f"任务 {task_id} 累计 ${task_total:.4f} + 本次 ${estimated_usd:.4f} 将超过任务上限 ${cap:.4f}")
+    if not reasons:
+        return None
+    if not policy.get("over_cap_requires_approval", True):
+        log_event(state, "预算越线但策略允许继续：" + "；".join(reasons), kind="cost")
+        return None
+    existing = _pending_budget_approval_exists(state, kind=kind, provider_id=provider_id, task_id=task_id)
+    if not existing:
+        detail = "\n".join([*reasons, f"动作：{kind}", f"provider：{provider_id or '-'}", f"task：{task_id or '-'}", f"说明：{note or '-'}"])
+        add_approval(state, {
+            "action": "budget_override",
+            "title": f"预算/成本越线确认：{kind} {provider_id or ''}".strip(),
+            "detail": detail,
+            "preview": detail + "\n\n确认后仅生成一次 30 分钟短时放行；不会自动发起外部调用，需要用户重新点击原动作。",
+            "cost_kind": kind,
+            "cost_provider_id": provider_id,
+            "cost_task_id": task_id,
+            "cost_estimated_usd": str(estimated_usd),
+            "cost_cap_usd": str(daily_cap),
+            "cost_reason": "；".join(reasons),
+        })
+    return "预算/成本策略已拦截：" + "；".join(reasons) + "。已加入确认队列；确认后请重新执行原动作。"
+
+
+def budget_override_apply_real(state, ap):
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    ov = {
+        "id": ap.get("id") or new_id("costovr"),
+        "kind": ap.get("cost_kind") or "any",
+        "provider_id": ap.get("cost_provider_id") or "",
+        "task_id": ap.get("cost_task_id") or "",
+        "estimated_usd": _money(_float(ap.get("cost_estimated_usd"), 0.0)),
+        "reason": redact(ap.get("cost_reason") or "budget override"),
+        "approved_at": now_iso(),
+        "expires_at": expires_at,
+    }
+    _cost_policy(state).setdefault("overrides", []).insert(0, ov)
+    log_event(state, f"预算/成本短时放行：{ov['kind']} / {ov.get('provider_id') or '-'}，30 分钟内有效", kind="cost")
+    return ov, None
+
+
+def update_cost_policy(state, payload):
+    policy = _cost_policy(state)
+    for key in ("daily_cap_usd", "provider_call_cap_usd", "task_cap_usd", "cc_run_cap_usd"):
+        if key in payload:
+            val = _float(payload.get(key), policy.get(key))
+            if val < 0:
+                return None, f"{key} 不能为负数"
+            policy[key] = _money(val)
+    if "long_run_seconds" in payload:
+        val = int(_float(payload.get("long_run_seconds"), policy.get("long_run_seconds")))
+        if val < 60:
+            return None, "long_run_seconds 不能小于 60 秒"
+        policy["long_run_seconds"] = val
+    if "enabled" in payload:
+        policy["enabled"] = bool(payload.get("enabled"))
+    if "over_cap_requires_approval" in payload:
+        policy["over_cap_requires_approval"] = bool(payload.get("over_cap_requires_approval"))
+    if payload.get("reset_ledger"):
+        state["cost_ledger"] = []
+        log_event(state, "成本账本已清空（本地记录，不影响供应商真实账单）", kind="cost")
+    log_event(state, "已更新预算/成本策略", kind="cost")
+    return {"policy": public_cost_policy(state), "status": cost_status(state)}, None
+
+
 def parse_level(value, default=1):
     """
     兼容前端/手工 API 传入的 Claude Code 权限等级。
@@ -834,7 +1139,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.19",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.20",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -844,7 +1149,20 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.19 支持真实桥接写入）
+        "cost_policy": {       # v0.20 累计预算/成本策略；估算值，不连接供应商账单
+            "enabled": True,
+            "currency": "USD",
+            "daily_cap_usd": DEFAULT_DAILY_COST_CAP_USD,
+            "provider_call_cap_usd": DEFAULT_PROVIDER_CALL_CAP_USD,
+            "task_cap_usd": DEFAULT_TASK_COST_CAP_USD,
+            "cc_run_cap_usd": DEFAULT_CC_RUN_CAP_USD,
+            "long_run_seconds": DEFAULT_LONG_RUN_SECONDS,
+            "over_cap_requires_approval": True,
+            "provider_price_per_1m": DEFAULT_PROVIDER_PRICE_PER_1M,
+            "overrides": [],
+        },
+        "cost_ledger": [],     # 真实模型/Claude Code 等可能计费动作的本地估算账本
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.20 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
@@ -855,8 +1173,8 @@ def default_state():
             "mark_sent_endpoint": "/api/wechat/bridge/mark_sent",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点和 runner 合约，不启动第二 poller。",
         },
-        "router_runs": [],     # v0.19 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
-        "cc_runs": [],          # Claude Code 运行记录（v0.19 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "router_runs": [],     # v0.20 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
+        "cc_runs": [],          # Claude Code 运行记录（v0.20 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -866,7 +1184,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.19 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.20 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -904,15 +1222,19 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.19 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.20 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.19"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.20"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
     state.setdefault("approvals", [])
     state.setdefault("providers", [])
+    state.setdefault("cost_policy", base["cost_policy"])
+    for k, v in base["cost_policy"].items():
+        state["cost_policy"].setdefault(k, v)
+    state.setdefault("cost_ledger", [])
     state.setdefault("wechat_inbox", [])
     state.setdefault("wechat_outbox", [])
     state.setdefault("wechat_bridge", base["wechat_bridge"])
@@ -977,7 +1299,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.19 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.20 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -1282,7 +1604,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.19 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.20 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -1291,7 +1613,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.19")
+                                    via="lingtai-simple-v0.20")
     if err:
         return None, err
     dispatch = {
@@ -1931,7 +2253,7 @@ def add_approval(state, payload):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id", "cost_kind", "cost_provider_id", "cost_task_id", "cost_estimated_usd", "cost_cap_usd", "cost_reason"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
@@ -1956,6 +2278,7 @@ def build_preview(action, payload):
         "lingtai_avatar_retire": f"[真实 LingTai avatar 退休/解绑预览 / 确认后不会删除目录；只做本地退休记录，并可选择写入 sleep/suspend signal]\n{detail}",
         "delete_agent": f"[删除灵预览]\n{detail}",
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
+        "budget_override": f"[预算/成本越线预览 / 确认后给该类动作一次短时放行；不会自动发起外部调用]\n{detail}",
     }
     return previews.get(action, f"[预览]\n{detail}")
 
@@ -2058,6 +2381,12 @@ def _apply_approved_action(state, ap):
             return err
         ap["result"] = result
         return None
+    if action == "budget_override":
+        result, err = budget_override_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        return None
     if action == "delete_agent" and ap.get("agent_id"):
         state["agents"] = [a for a in state["agents"] if a["id"] != ap["agent_id"]]
         log_event(state, "（本地状态）已删除灵")
@@ -2066,7 +2395,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.19 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.20 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -2234,13 +2563,20 @@ def prepare_model_test(state, payload):
         return None, ("未找到该供应商 key：请先保存到 Keychain；或设置只读 env slot " + env_name +
                       "；或在模型/API中心显式启用受限 .secrets fallback。")
 
-    log_event(state, f"真实模型调用（可能计费）：{provider_id} / {model} / key_source={key_source}", kind="real_api")
+    pre_estimate, pre_usage = estimate_model_cost_usd(state, provider_id, usage=None, prompt=prompt, max_tokens=MODEL_CALL_MAX_TOKENS)
+    budget_err = budget_preflight(state, kind="model_call", provider_id=provider_id,
+                                  estimated_usd=pre_estimate, note=f"model={model}; key_source={key_source}")
+    if budget_err:
+        return None, budget_err
+
+    log_event(state, f"真实模型调用（可能计费）：{provider_id} / {model} / key_source={key_source} / 预估≈${pre_estimate:.6f}", kind="real_api")
     return {"provider_id": provider_id, "base_url": base_url, "model": model,
-            "prompt": prompt, "api_key": api_key, "key_source": key_source}, None
+            "prompt": prompt, "api_key": api_key, "key_source": key_source,
+            "preflight_estimated_cost_usd": pre_estimate, "preflight_usage_estimate": pre_usage}, None
 
 
 # --------------------------------------------------------------------------
-# Unified Task Router / WeChat runner contract (v0.19)
+# Unified Task Router / WeChat runner contract (v0.20)
 # --------------------------------------------------------------------------
 
 def _first_available_agent(state, *, fallback_name="微信主控灵", fallback_role="长期助手", lingtai_address=""):
@@ -2531,7 +2867,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.19 当前状态：",
+        "圆酱，LingTai Simple v0.20 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -2668,7 +3004,7 @@ def wechat_bridge_incoming(state, payload):
         item["stages"].append("收功单已生成")
         reply = f"已生成收功单：{sg['path']}\n\n你可以先离屏休息；回来按收功单继续。"
     else:
-        # 默认入口统一交给 v0.19 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
+        # 默认入口统一交给 v0.20 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
         routed, err = route_task(state, {"text": text, "source": "wechat_bridge", "confirm_dispatch": bool(payload.get("confirm_dispatch")), "address": payload.get("address") or ""})
         if err:
             item["status"] = "卡住"
@@ -2710,7 +3046,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.19（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.20（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -3256,7 +3592,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.19 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.20 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -3466,6 +3802,12 @@ def prepare_cc_readonly_run(state, payload):
         return None, None, "真实 Claude Code 只读分析会调用外部模型，可能产生费用；请勾选费用确认后再执行。"
     if not claude_code_available():
         return None, None, "本机找不到 claude CLI，无法真实执行 Claude Code worker。"
+    reserved = _money(_float(CC_MAX_BUDGET_USD, DEFAULT_CC_RUN_CAP_USD))
+    budget_err = budget_preflight(
+        state, kind="claude_code_L1", estimated_usd=reserved,
+        note=f"Claude Code L1 read-only run; max-budget-usd={reserved:.4f}")
+    if budget_err:
+        return None, None, budget_err
     run = {
         "id": new_id("ccrun"),
         "level": 1,
@@ -3477,6 +3819,9 @@ def prepare_cc_readonly_run(state, payload):
         "finished_at": None,
         "exit_code": None,
         "duration_ms": None,
+        "reserved_cost_usd": reserved,
+        "cost_recorded": False,
+        "cost_source": "max_budget_reservation",
         "output_preview": "",
         "report_path": "",
         "safety_note": "只读分析：仅允许 Claude Code 使用 Read/Grep/Glob；不允许 Edit/Write/Bash；不会 commit/PR/merge。",
@@ -3636,6 +3981,12 @@ def prepare_cc_local_edit_run(state, payload):
         return None, None, "真实 Claude Code L2 本地改码会调用外部模型、可能产生费用并修改本仓库文件；请勾选费用/本地改动确认后再执行。"
     if not claude_code_available():
         return None, None, "本机找不到 claude CLI，无法真实执行 Claude Code worker。"
+    reserved = _money(_float(CC_MAX_BUDGET_USD, DEFAULT_CC_RUN_CAP_USD))
+    budget_err = budget_preflight(
+        state, kind="claude_code_L2", estimated_usd=reserved,
+        note=f"Claude Code L2 local-edit run; max-budget-usd={reserved:.4f}")
+    if budget_err:
+        return None, None, budget_err
     clean, err = _worktree_clean()
     if not clean:
         return None, None, err
@@ -3650,6 +4001,9 @@ def prepare_cc_local_edit_run(state, payload):
         "finished_at": None,
         "exit_code": None,
         "duration_ms": None,
+        "reserved_cost_usd": reserved,
+        "cost_recorded": False,
+        "cost_source": "max_budget_reservation",
         "output_preview": "",
         "report_path": "",
         "changed_files": [],
@@ -3790,7 +4144,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.19 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.20 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -3811,10 +4165,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.19（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.20（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.19 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.20 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -4018,7 +4372,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "本地傻瓜界面：最多 5 灵状态卡，新建/暂停/删除/改任务，任务队列、context 压力、API/成本、收功、Time Machine、确认队列。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:101-113",
         "status": "done",
-        "evidence": "static/index.html + app.js 已提供大按钮、状态卡、任务停车场、context 压力、模型/API、确认队列、收功、Rollback、LingTai runtime 与记忆/技能索引。",
+        "evidence": "static/index.html + app.js 已提供大按钮、状态卡、任务停车场、context 压力、模型/API、预算/成本面板、确认队列、收功、Rollback、LingTai runtime 与记忆/技能索引。",
         "gap": "不是完整开发者调试台；这是 v0 的有意边界。",
         "test": "python3 scripts/self_check.py；node --check static/app.js；浏览器打开 http://127.0.0.1:8765/。",
     },
@@ -4048,9 +4402,9 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "首批 GPT/OpenAI-compatible、MiMo、DeepSeek、MiniMax、GLM、自定义 base_url+api_key+model；连接测试、状态、能力标签、cost 上限/告警。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:145-167",
         "status": "partial",
-        "evidence": "PROVIDER_CATALOG 已含 6 类供应商；API key 进 Keychain；/api/model/test 可对 OpenAI-compatible chat/completions 做真实调用，需 confirm_cost；单次 max_tokens/timeout 有硬上限。",
-        "gap": "MiMo/MiniMax 端点需用户填写兼容 base_url；还没有按 provider/任务维度的累计预算、余额估算或价格表。",
-        "test": "python3 scripts/self_check.py（验证未确认费用会拒绝、key 不落盘）；真实模型测试需用户显式 confirm_cost。",
+        "evidence": "PROVIDER_CATALOG 已含 6 类供应商；API key 进 Keychain/env/.secrets 受限 fallback；/api/model/test 可对 OpenAI-compatible chat/completions 做真实调用，需 confirm_cost；v0.20 增加 /api/cost/status、/api/cost/policy、本地价格表、单次 provider cap、日 cap、任务 cap 与模型调用预算预检，越线先生成 budget_override approval。",
+        "gap": "MiMo/MiniMax 端点需用户填写兼容 base_url；预算/成本仍是本地估算，不连接供应商真实账单/余额，默认价格表需要按实际 provider/model 校准。",
+        "test": "python3 scripts/self_check.py（验证未确认费用会拒绝、预算越线生成 budget_override、key 不落盘）；真实模型测试需用户显式 confirm_cost。",
     },
     {
         "id": "A06",
@@ -4059,7 +4413,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:169-182",
         "status": "partial",
         "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；Keychain 不可用/被禁用时，可显式选择受限 .secrets/providers/<provider>.key fallback（目录 0700、文件 0600、拒绝 symlink/不安全权限），或使用只读 env slot；/api/health 返回 secret_vault 结构化扫描，只给位置/字段/权限/行动建议，不回显值；self_check 用假 key 验证 env/.secrets fallback、权限告警与脱敏。",
-        "gap": "受限 env/.secrets fallback 已补上；价格/预算策略仍需与 Secret Vault / Model API Registry 联动。",
+        "gap": "受限 env/.secrets fallback 已补上；已与 Model API Registry 的预算预检联动；仍未连接供应商真实账单/余额，Secret Vault 侧也不做真实扣费来源校验。",
         "test": "python3 scripts/self_check.py（Keychain disable、env slot、受限 .secrets fallback、权限告警、state/health 脱敏）；提交前高置信秘密扫描。",
     },
     {
@@ -4069,7 +4423,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:184-202",
         "status": "partial",
         "evidence": "已有确认队列与 approve/deny；覆盖 rollback、delete_agent、sensitive task、Claude L3/L4/L5、LingTai lifecycle/avatar、PR/merge 等；UI 显示说明和预览文本。",
-        "gap": "还没有 allow-once/allow-for-task 的细粒度授权；日志/截图/报告导出确认尚未单独实现；部分真实 API 调用采用 confirm_cost checkbox 而非队列项。",
+        "gap": "预算越线已有 30 分钟短时 override；但还没有通用 allow-once/allow-for-task 的细粒度授权；日志/截图/报告导出确认尚未单独实现；未越线的真实 API 调用仍采用 confirm_cost checkbox 而非队列项。",
         "test": "python3 scripts/self_check.py；destructive rollback/commit smoke 在隔离副本中验证。",
     },
     {
@@ -4088,7 +4442,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
         "status": "done",
-        "evidence": "v0.19 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "evidence": "v0.20 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
         "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
         "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
     },
@@ -4122,7 +4476,7 @@ def architecture_acceptance_status():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     return {
         "ok": True,
-        "version": "v0.19",
+        "version": "v0.20",
         "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
         "summary": {
             "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
@@ -4131,7 +4485,7 @@ def architecture_acceptance_status():
         },
         "items": ARCHITECTURE_ACCEPTANCE_ITEMS,
         "next_recommended_work": [
-            "补累计预算/成本面板：provider/任务维度 cost cap、长跑告警与确认队列联动。",
+            "继续把本地预算/成本估算校准到更多 provider/model，并在可用时接供应商真实账单/余额只读查询。",
             "继续把 Task Router 扩展到受控 daemon/Codex/real avatar 调度与结果汇总。",
             "把 Secret Vault 状态与模型调用成本/确认队列做更细粒度联动。",
         ],
@@ -4158,7 +4512,7 @@ def health_check():
     required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir", "secret_vault_scan")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.19",
+        "version": "v0.20",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -4194,7 +4548,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.19"
+    server_version = "LingTaiSimple/0.20"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -4272,6 +4626,15 @@ class Handler(BaseHTTPRequestHandler):
                     "file_mode": "0600",
                     "dir_mode": "0700",
                 },
+                "cost_policy": public_cost_policy(load_state()),
+            })
+        if route == "/api/cost/status":
+            state = load_state()
+            return self._send_json({
+                "ok": True,
+                "policy": public_cost_policy(state),
+                "status": cost_status(state),
+                "ledger": state.get("cost_ledger", [])[:100],
             })
         if route == "/api/rollback/preview":
             state = load_state()
@@ -4322,7 +4685,9 @@ class Handler(BaseHTTPRequestHandler):
             state = load_state()
             spec, err = prepare_model_test(state, payload)
             if err:
-                return self._send_json({"ok": False, "error": err}, 400)
+                # budget_preflight may have queued a budget_override approval/log before returning an error.
+                save_state(state)
+                return self._send_json({"ok": False, "error": err, "state": self._public_state(state)}, 400)
             save_state(state)  # 已记录「发起调用」日志
 
         # 锁外：发起真实网络请求（可能耗时 / 可能计费）。spec 含明文 key，仅本地内存。
@@ -4340,8 +4705,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(resp, 400)
             result.pop("api_key", None)  # 防御性
             result["key_source"] = spec.get("key_source")
+            actual_estimate, actual_usage = estimate_model_cost_usd(state, pid, usage=result.get("usage"),
+                                                                    prompt=spec.get("prompt") or "",
+                                                                    max_tokens=MODEL_CALL_MAX_TOKENS)
+            result["estimated_cost_usd"] = actual_estimate
+            result["cost_usage_estimate"] = actual_usage
+            record_cost_event(state, kind="model_call", provider_id=pid, estimated_usd=actual_estimate,
+                              usage=result.get("usage") or actual_usage, source="provider_usage" if result.get("usage") else "local_estimate",
+                              note=f"model={result.get('model')}; latency={result.get('latency_ms')}ms")
             log_event(state, f"真实模型调用成功：{pid} / {result.get('model')} "
-                             f"（{result.get('latency_ms')}ms）", kind="real_api")
+                             f"（{result.get('latency_ms')}ms，估算成本≈${actual_estimate:.6f}）", kind="real_api")
             save_state(state)
             return self._send_json({"ok": True, "result": result,
                                     "state": self._public_state(state)})
@@ -4365,7 +4738,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 run, desc, err = prepare_cc_local_edit_run(state, payload)
             if err:
-                return self._send_json({"ok": False, "error": err}, 400)
+                # budget_preflight may have queued a budget_override approval/log before returning an error.
+                save_state(state)
+                return self._send_json({"ok": False, "error": err, "state": self._public_state(state)}, 400)
             save_state(state)
 
         update = run_claude_code_readonly(run, desc) if level == 1 else run_claude_code_local_edit(run, desc)
@@ -4379,6 +4754,15 @@ class Handler(BaseHTTPRequestHandler):
                 runs.insert(0, target)
             target.update(update)
             label = "只读分析" if level == 1 else "L2 本地改码"
+            if not target.get("cost_recorded"):
+                reserved = _money(_float(target.get("reserved_cost_usd"), DEFAULT_CC_RUN_CAP_USD))
+                if reserved > 0:
+                    record_cost_event(
+                        state, kind=f"claude_code_L{level}", estimated_usd=reserved,
+                        source="max_budget_reservation",
+                        note=f"{label}; status={update.get('status')}; duration_ms={update.get('duration_ms')}",
+                        metadata={"run_id": run.get("id"), "status": update.get("status"), "duration_ms": update.get("duration_ms")})
+                target["cost_recorded"] = True
             log_event(state, f"Claude Code {label}{update['status']}：{run['id']}（{update['duration_ms']}ms）", kind="claude_code")
             save_state(state)
             ok = update["status"] in ("完成", "无改动")
@@ -4410,6 +4794,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/provider/save": lambda s, p: save_provider(s, p),
             "/api/provider/delete_key": lambda s, p: delete_provider_key(s, p),
             "/api/provider/check_key": lambda s, p: check_provider_key(s, p),
+            "/api/cost/policy": lambda s, p: update_cost_policy(s, p),
             "/api/wechat/submit": lambda s, p: wechat_submit(s, p),
             "/api/wechat/bridge/incoming": lambda s, p: wechat_bridge_incoming(s, p),
             "/api/wechat/bridge/pending": lambda s, p: wechat_bridge_pending(s, p),
@@ -4439,6 +4824,9 @@ class Handler(BaseHTTPRequestHandler):
             "tasks": state["tasks"][:30],
             "approvals": state["approvals"][:30],
             "providers": safe_providers,
+            "cost_policy": public_cost_policy(state),
+            "cost_status": cost_status(state),
+            "cost_ledger": state.get("cost_ledger", [])[:40],
             "wechat_inbox": state.get("wechat_inbox", [])[:30],
             "wechat_outbox": state.get("wechat_outbox", [])[:30],
             "wechat_bridge": state.get("wechat_bridge", {}),
@@ -4460,6 +4848,7 @@ class Handler(BaseHTTPRequestHandler):
                 "max_agents": MAX_AGENTS,
                 "pending_approvals": len([a for a in state["approvals"] if a["status"] == "待确认"]),
                 "active_tasks": len([t for t in state["tasks"] if t["status"] in ("排队中", "执行中", "等确认")]),
+                "today_estimated_cost_usd": cost_status(state).get("today_total_usd", 0.0),
             },
         }
 
@@ -4525,7 +4914,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.19 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.20 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

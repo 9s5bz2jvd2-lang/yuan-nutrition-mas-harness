@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.19",
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.20",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
     "created_at": "2026-06-05T08:00:00-07:00",
@@ -56,6 +56,50 @@
       "updated_at": "2026-06-05T08:00:00-07:00"
     }
   ],
+  "cost_policy": {
+    "enabled": true,
+    "currency": "USD",
+    "daily_cap_usd": 1.0,
+    "provider_call_cap_usd": 0.05,
+    "task_cap_usd": 0.25,
+    "cc_run_cap_usd": 0.5,
+    "long_run_seconds": 900,
+    "over_cap_requires_approval": true,
+    "provider_price_per_1m": {
+      "openai": {
+        "input": 5.0,
+        "output": 15.0,
+        "note": "默认保守估算；请按实际模型价格调整。"
+      },
+      "deepseek": {
+        "input": 0.55,
+        "output": 2.19,
+        "note": "默认估算；不同模型/缓存价格不同。"
+      },
+      "glm": {
+        "input": 0.3,
+        "output": 0.3,
+        "note": "默认低价估算；不同 GLM 模型价格不同。"
+      },
+      "mimo": {
+        "input": 1.0,
+        "output": 1.0,
+        "note": "未知供应商价格，占位估算。"
+      },
+      "minimax": {
+        "input": 1.0,
+        "output": 1.0,
+        "note": "未知供应商价格，占位估算。"
+      },
+      "custom": {
+        "input": 1.0,
+        "output": 1.0,
+        "note": "自定义供应商占位估算。"
+      }
+    },
+    "overrides": []
+  },
+  "cost_ledger": [],
   "wechat_inbox": [
     {
       "id": "wx_demo0001",
@@ -94,7 +138,7 @@
     "network_dir": "/path/to/.lingtai",
     "sender": "human",
     "reply_inbox": "mimo-2-5-pro",
-    "note": "v0.19 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
+    "note": "v0.20 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
   },
   "lingtai_dispatches": [],
   "lingtai_mail_results": [],

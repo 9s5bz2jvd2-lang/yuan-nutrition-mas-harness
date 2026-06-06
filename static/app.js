@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.18 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.20 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -32,6 +32,10 @@ async function loadCatalog() {
 function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function money(v) {
+  const n = Number(v || 0);
+  return "$" + n.toFixed(n >= 1 ? 2 : 6);
 }
 function toast(msg) {
   const t = $("#toast");
@@ -74,6 +78,7 @@ function render() {
   renderLingTaiMemory();
   renderApprovals();
   renderProviders();
+  renderCostPanel();
   renderCCLevels();
   renderCCRuns();
   renderOrchestrations();
@@ -276,6 +281,35 @@ function renderProviders() {
       </div>
       <div class="cap-tags">${(p.tags || []).map(t => `<span class="ct">${esc(t)}</span>`).join("")}</div>
     </div>`).join("");
+}
+
+
+function renderCostPanel() {
+  const el = $("#cost-panel");
+  if (!el) return;
+  const st = STATE.cost_status || {};
+  const policy = STATE.cost_policy || {};
+  const warnings = st.warnings || [];
+  const ledger = STATE.cost_ledger || [];
+  const byProvider = Object.entries(st.by_provider || {}).map(([k,v]) => `${esc(k)} ${money(v)}`).join(" · ") || "暂无";
+  const byKind = Object.entries(st.by_kind || {}).map(([k,v]) => `${esc(k)} ${money(v)}`).join(" · ") || "暂无";
+  el.innerHTML = `
+    <div class="row">
+      <div class="row-top">
+        <span class="row-title">今日估算：${money(st.today_total_usd)} / 日上限 ${money(policy.daily_cap_usd)}</span>
+        ${warnings.length ? `<span class="tag waiting">${warnings.length} 条提醒</span>` : `<span class="tag done">预算正常</span>`}
+      </div>
+      <div class="row-sub">
+        provider 分布：${byProvider}<br>
+        类型分布：${byKind}<br>
+        单次 provider 上限：${money(policy.provider_call_cap_usd)} · 任务上限：${money(policy.task_cap_usd)} · Claude Code 单次上限：${money(policy.cc_run_cap_usd)}
+      </div>
+      ${warnings.length ? `<div class="preview">${warnings.map(w => esc(w.message || w.kind)).join("\n")}</div>` : ""}
+      <div class="row-actions"><button class="btn small" onclick="openCostModal()">调整预算策略</button></div>
+    </div>
+    <h3 class="sub">最近成本账本</h3>
+    ${ledger.length ? ledger.slice(0,5).map(r => `<div class="row"><div class="row-top"><span class="row-title">${esc(r.kind)} ${r.provider_id ? " / " + esc(r.provider_id) : ""}</span><span class="tag idle">≈${money(r.estimated_usd)}</span></div><div class="row-sub">${esc((r.created_at || "").replace("T"," ").slice(0,19))} · ${esc(r.source || "local_estimate")}</div>${r.note ? `<div class="preview">${esc(r.note)}</div>` : ""}</div>`).join("") : `<div class="empty">暂无成本记录。</div>`}
+  `;
 }
 
 function renderCCLevels() {
@@ -655,6 +689,43 @@ async function submitSoul() {
   STATE = r.state; render(); closeModal(); toast("心流已生成");
 }
 
+
+function openCostModal() {
+  const policy = STATE.cost_policy || {};
+  const st = STATE.cost_status || {};
+  const ledger = STATE.cost_ledger || [];
+  openModal("预算 / 成本面板（本地估算）", `
+    <p class="hint">这是本地估算与确认闸：会拦截预计越线的模型调用 / Claude Code 预算预留，并生成短时放行确认项。它不读取供应商真实账单或余额，价格表需要按实际供应商校准。</p>
+    <div class="preview">今日估算：${money(st.today_total_usd)} / 日上限 ${money(policy.daily_cap_usd)}\n单次 provider 上限：${money(policy.provider_call_cap_usd)}\n任务上限：${money(policy.task_cap_usd)}\nClaude Code 单次上限：${money(policy.cc_run_cap_usd)}\n长跑提醒阈值：${esc(policy.long_run_seconds || 0)} 秒</div>
+    <label>日上限 USD</label><input id="cost-daily" type="number" min="0" step="0.000001" value="${esc(policy.daily_cap_usd ?? 1)}" />
+    <label>单次 provider 调用上限 USD</label><input id="cost-provider" type="number" min="0" step="0.000001" value="${esc(policy.provider_call_cap_usd ?? 0.05)}" />
+    <label>单任务累计上限 USD</label><input id="cost-task" type="number" min="0" step="0.000001" value="${esc(policy.task_cap_usd ?? 0.25)}" />
+    <label>Claude Code 单次预算预留上限 USD</label><input id="cost-cc" type="number" min="0" step="0.000001" value="${esc(policy.cc_run_cap_usd ?? 0.5)}" />
+    <label>长跑提醒秒数</label><input id="cost-long" type="number" min="60" step="1" value="${esc(policy.long_run_seconds ?? 900)}" />
+    <label class="checkrow"><input type="checkbox" id="cost-enabled" ${policy.enabled !== false ? "checked" : ""} /> 启用预算/成本闸</label>
+    <label class="checkrow"><input type="checkbox" id="cost-approval" ${policy.over_cap_requires_approval !== false ? "checked" : ""} /> 越线时必须进入确认队列</label>
+    <label class="checkrow"><input type="checkbox" id="cost-reset" /> 同时清空本地成本账本（不影响供应商真实账单）</label>
+    <button class="btn primary" onclick="saveCostPolicy()">保存预算策略</button>
+    <h3 class="sub">最近账本</h3>
+    ${ledger.length ? ledger.slice(0,12).map(r => `<div class="row"><div class="row-top"><span class="row-title">${esc(r.kind)} ${r.provider_id ? " / " + esc(r.provider_id) : ""}</span><span class="tag idle">≈${money(r.estimated_usd)}</span></div><div class="row-sub">${esc(r.created_at || "")} · ${esc(r.source || "")}</div></div>`).join("") : `<div class="empty">暂无成本记录。</div>`}
+  `);
+}
+
+async function saveCostPolicy() {
+  const r = await api("/api/cost/policy", {
+    daily_cap_usd: $("#cost-daily").value,
+    provider_call_cap_usd: $("#cost-provider").value,
+    task_cap_usd: $("#cost-task").value,
+    cc_run_cap_usd: $("#cost-cc").value,
+    long_run_seconds: $("#cost-long").value,
+    enabled: $("#cost-enabled").checked,
+    over_cap_requires_approval: $("#cost-approval").checked,
+    reset_ledger: $("#cost-reset").checked,
+  });
+  if (r.ok) { toast("已保存预算/成本策略"); closeModal(); render(); }
+  else toast(r.error || "保存失败");
+}
+
 function openApprovalsModal() {
   // 直接滚动到确认队列卡
   $$(".card.accent")[0]?.scrollIntoView({ behavior: "smooth" });
@@ -1022,6 +1093,7 @@ const ACTIONS = {
   "wechat": openWechatModal,
   "models": openModelsModal,
   "cc": openCCModal,
+  "cost": openCostModal,
   "approvals": openApprovalsModal,
   "shougong": openShougongModal,
   "rollback": openRollbackModal,
@@ -1065,6 +1137,8 @@ function bind() {
 // 暴露给内联 onclick
 window.agentAction = agentAction;
 window.approval = approval;
+window.openCostModal = openCostModal;
+window.saveCostPolicy = saveCostPolicy;
 window.quickAssign = quickAssign;
 window.submitNewAgent = submitNewAgent;
 window.submitTask = submitTask;

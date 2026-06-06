@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.19 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.20 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -89,7 +89,7 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.19', health
+        assert health['version']=='v0.20', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] is False, health
         assert health['checks'].get('secret_vault_scan') is True, health
@@ -98,7 +98,7 @@ time.sleep(30)
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.19' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.20' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
@@ -116,8 +116,16 @@ time.sleep(30)
         assert 'keychain_available' in catalog and catalog['keychain_available'] is False
         assert catalog.get('keychain_disabled') is True, catalog
         assert catalog.get('secret_fallback', {}).get('env_prefix') == 'LINGTAI_SIMPLE_API_KEY_', catalog
+        assert catalog.get('cost_policy', {}).get('currency') == 'USD', catalog
+        assert catalog['cost_policy']['daily_cap_usd'] > 0 and catalog['cost_policy']['provider_call_cap_usd'] > 0, catalog
         # 每个供应商应有 default_model 字段（UI 默认填充）
         assert all('default_model' in p for p in catalog['providers']), catalog['providers']
+
+        # ---- v0.20 预算/成本面板：本地估算策略可读可改，越线会进确认队列而不会发起真实网络调用 ----
+        cost0=req('/api/cost/status')
+        assert cost0['ok'] and cost0['policy']['currency']=='USD' and cost0['status']['today_total_usd'] == 0, cost0
+        pol=req('/api/cost/policy', {'provider_call_cap_usd': 0.000001, 'daily_cap_usd': 5.0, 'reset_ledger': True})
+        assert pol['ok'] and pol['result']['policy']['provider_call_cap_usd'] == 0.000001, pol
 
         # ---- 供应商保存：保存 base_url/model（不带 key），不应有明文 ----
         r=req('/api/provider/save', {'provider_id':'openai','base_url':'https://api.example.invalid/v1','model':'gpt-test'})
@@ -176,6 +184,17 @@ time.sleep(30)
         # ---- 真实模型调用必须显式确认；未确认时拒绝、且不发起网络 ----
         mt=req('/api/model/test', {'provider_id':'openai'})
         assert not mt['ok'] and '费用' in (mt.get('error') or ''), mt
+        # confirm_cost=true 但预算单次上限被调低时，应先被预算闸拦截并生成 budget_override；
+        # 因为在 prepare 阶段已拦截，这一步不会发起真实 HTTP 模型请求。
+        mt_budget=req('/api/model/test', {'provider_id':'deepseek','confirm_cost':True,'prompt':'self-check budget gate'})
+        assert not mt_budget['ok'] and '预算/成本策略已拦截' in (mt_budget.get('error') or ''), mt_budget
+        st_budget=req('/api/state')
+        budget_ap=next((a for a in st_budget.get('approvals', []) if a.get('action')=='budget_override' and a.get('status')=='待确认'), None)
+        assert budget_ap and budget_ap.get('cost_kind')=='model_call' and budget_ap.get('cost_provider_id')=='deepseek', st_budget.get('approvals')
+        budget_ok=req('/api/approval/approve', {'approval_id': budget_ap['id']})
+        assert budget_ok['ok'] and budget_ok['result']['status']=='已确认', budget_ok
+        cost1=req('/api/cost/status')
+        assert cost1['ok'] and any(o.get('kind')=='model_call' and o.get('provider_id')=='deepseek' for o in cost1['policy'].get('active_overrides', [])), cost1
 
         # ---- 既有本地任务编排流程仍正常 ----
         a=req('/api/agent/create', {'name':'自检灵','role':'长期助手','provider_id':'openai','cc_level':'L1'})
@@ -276,7 +295,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.19' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.20' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -327,7 +346,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.19 self-check passed')
+        print('OK LingTai Simple v0.20 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
