@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.21 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.22 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -245,21 +245,38 @@ function memoryRows(items, label) {
 
 function renderApprovals() {
   const el = $("#approvals");
-  if (!STATE.approvals.length) { el.innerHTML = `<div class="empty">确认队列为空。敏感动作会出现在这里。</div>`; return; }
-  el.innerHTML = STATE.approvals.map(a => `
+  const grants = STATE.approval_grants || {};
+  const grantable = new Set(grants.grantable_actions || []);
+  const active = grants.active || [];
+  const grantPanel = active.length ? `
+    <div class="row">
+      <div class="row-top"><span class="row-title">已启用 scoped grants（限时/限次自动确认）</span>${statusTag(active.length + " active")}</div>
+      <div class="row-sub">${active.map(g => `${esc(g.id)} · ${esc(g.scope)} · ${esc(g.action)} · 剩余 ${esc(g.uses_remaining)} 次 · 到期 ${esc(g.expires_at || "")}`).join("<br>")}</div>
+    </div>` : `
+    <div class="row">
+      <div class="row-top"><span class="row-title">Scoped grants</span>${statusTag("未开启")}</div>
+      <div class="row-sub">v0.22 支持“确认并允许下一次同类 / 本任务同类”。rollback、merge、lifecycle、真实 avatar 等破坏性动作仍逐项确认。</div>
+    </div>`;
+  if (!STATE.approvals.length) { el.innerHTML = grantPanel + `<div class="empty">确认队列为空。敏感动作会出现在这里。</div>`; return; }
+  el.innerHTML = grantPanel + STATE.approvals.map(a => {
+    const canGrant = grantable.has(a.action);
+    return `
     <div class="row">
       <div class="row-top">
         <span class="row-title">${esc(a.title)}</span>
         ${statusTag(a.status)}
       </div>
-      <div class="row-sub">动作类型：<code>${esc(a.action)}</code></div>
+      <div class="row-sub">动作类型：<code>${esc(a.action)}</code>${a.grant_id ? ` · grant：<code>${esc(a.grant_id)}</code>` : ""}${a.created_grant_id ? ` · 新授权：<code>${esc(a.created_grant_id)}</code>` : ""}</div>
       <div class="preview">${esc(a.preview)}</div>
       ${a.status === "待确认" ? `
       <div class="row-actions">
         <button class="btn ok small" onclick="approval('${a.id}','approve')">确认/执行</button>
+        ${canGrant ? `<button class="btn small" onclick="approval('${a.id}','approve','once')">确认并允许下一次同类</button>` : ""}
+        ${canGrant && a.task_id ? `<button class="btn small" onclick="approval('${a.id}','approve','task')">确认并允许本任务同类</button>` : ""}
         <button class="btn danger small" onclick="approval('${a.id}','deny')">拒绝</button>
       </div>` : ""}
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function keySourceLabel(p) {
@@ -420,10 +437,15 @@ async function agentAction(id, action) {
   render();
 }
 
-async function approval(id, decision) {
-  const r = await api(`/api/approval/${decision}`, { approval_id: id });
-  if (r.ok) toast(decision === "approve" ? "已确认/执行" : "已拒绝");
-  else toast(r.error || "操作失败");
+async function approval(id, decision, grantScope = "") {
+  const payload = { approval_id: id };
+  if (grantScope) payload.grant_scope = grantScope;
+  const r = await api(`/api/approval/${decision}`, payload);
+  if (r.ok) {
+    if (grantScope === "once") toast("已确认，并允许下一次同类动作自动确认");
+    else if (grantScope === "task") toast("已确认，并允许本任务同类动作限次自动确认");
+    else toast(decision === "approve" ? "已确认/执行" : "已拒绝");
+  } else toast(r.error || "操作失败");
   render();
 }
 

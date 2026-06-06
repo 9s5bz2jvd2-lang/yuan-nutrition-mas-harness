@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.21 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.22 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -89,7 +89,7 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.21', health
+        assert health['version']=='v0.22', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] is False, health
         assert health['checks'].get('secret_vault_scan') is True, health
@@ -98,7 +98,7 @@ time.sleep(30)
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.21' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.22' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
@@ -196,6 +196,38 @@ time.sleep(30)
         cost1=req('/api/cost/status')
         assert cost1['ok'] and any(o.get('kind')=='model_call' and o.get('provider_id')=='deepseek' for o in cost1['policy'].get('active_overrides', [])), cost1
 
+        # ---- v0.22 scoped approval grants: allow-once creates a bounded grant; the next same action is auto-confirmed ----
+        manual_ap=req('/api/approval/add', {
+            'action':'sensitive_task', 'title':'self-check scoped grant seed',
+            'detail':'local-only self-check action, no external side effect',
+            'task_id':'task_selfcheck_grant', 'agent_id':'agent_selfcheck_grant'
+        })
+        assert manual_ap['ok'] and manual_ap['result']['status']=='待确认', manual_ap
+        grant_seed_id=manual_ap['result']['id']
+        grant_ok=req('/api/approval/approve', {'approval_id': grant_seed_id, 'grant_scope':'once'})
+        assert grant_ok['ok'], grant_ok
+        grants=grant_ok['state'].get('approval_grants', {})
+        assert grants.get('active_count') == 1 and grants['active'][0]['action']=='sensitive_task' and grants['active'][0]['scope']=='once', grants
+        auto_ap=req('/api/approval/add', {
+            'action':'sensitive_task', 'title':'self-check scoped grant auto',
+            'detail':'should be auto-confirmed by allow-once grant',
+            'task_id':'task_selfcheck_grant_auto', 'agent_id':'agent_selfcheck_grant'
+        })
+        assert auto_ap['ok'], auto_ap
+        auto_res=auto_ap['result']
+        assert auto_res['status']=='grant自动确认' and auto_res.get('grant_id'), auto_res
+        st_grant=auto_ap['state']
+        assert st_grant.get('approval_grants', {}).get('active_count') == 0, st_grant.get('approval_grants')
+        used_grant=next((g for g in st_grant.get('approval_grants', {}).get('recent', []) if g.get('id')==auto_res.get('grant_id')), None)
+        assert used_grant and used_grant.get('status')=='used' and auto_res['id'] in used_grant.get('used_by', []), used_grant
+        # Destructive actions remain per-item only and cannot be turned into a scoped grant.
+        destructive=req('/api/approval/add', {'action':'code_merge', 'title':'self-check no scoped grant for merge', 'detail':'do not execute'})
+        assert destructive['ok'] and destructive['result']['status']=='待确认', destructive
+        bad_grant=req('/api/approval/approve', {'approval_id': destructive['result']['id'], 'grant_scope':'once'})
+        assert not bad_grant['ok'] and '逐项确认' in bad_grant.get('error',''), bad_grant
+        deny_destructive=req('/api/approval/deny', {'approval_id': destructive['result']['id']})
+        assert deny_destructive['ok'], deny_destructive
+
         # ---- 既有本地任务编排流程仍正常 ----
         a=req('/api/agent/create', {'name':'自检灵','role':'长期助手','provider_id':'openai','cc_level':'L1'})
         aid=a['result']['id']
@@ -246,7 +278,7 @@ time.sleep(30)
         st_reply=req('/api/state')
         assert st_reply.get('lingtai_mail_results') and st_reply['lingtai_dispatches'][0]['status']=='reply_received', st_reply
 
-        # ---- v0.21 受控 worker 调度：Task Router 只创建确认闸；批准后写真实内部邮箱给 controller，再按 worker_request_id 回收结果 ----
+        # ---- v0.22 受控 worker 调度：Task Router 只创建确认闸；批准后写真实内部邮箱给 controller，再按 worker_request_id 回收结果 ----
         worker_route=req('/api/task/route', {'text':'daemon 分神：请扫一遍 self-check worker 调度链路并总结', 'source':'self_check'})
         assert worker_route['ok'] and worker_route['result']['route_type']=='daemon_plan', worker_route
         assert worker_route['result']['status']=='awaiting_worker_dispatch_approval', worker_route
@@ -334,7 +366,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.21' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.22' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -366,7 +398,7 @@ time.sleep(30)
         wx_orch=req('/api/wechat/bridge/incoming', {'text':'多agent 做一个认真版本','user_id':'wx_selfcheck','message_id':'msg_selfcheck_orch','sender':'圆酱'})
         assert wx_orch['ok'] and '批次' in wx_orch['result']['reply_text'], wx_orch
 
-        # ---- v0.21 WeChat 来源的 worker 调度：确认后回收 controller 回信，并进入 no_second_poller outbox ----
+        # ---- v0.22 WeChat 来源的 worker 调度：确认后回收 controller 回信，并进入 no_second_poller outbox ----
         wx_worker=req('/api/wechat/bridge/incoming', {
             'text':'daemon 分神 帮我检查微信来源 worker 汇总链路',
             'user_id':'wx_selfcheck','message_id':'msg_selfcheck_worker','sender':'圆酱'})
@@ -419,7 +451,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.21 self-check passed')
+        print('OK LingTai Simple v0.22 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

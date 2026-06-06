@@ -1,32 +1,41 @@
-# LingTai Simple v0.21 Implementation Report
+# LingTai Simple v0.22 Implementation Report
 
+
+## v0.22 Update — Scoped Approval Grants
+
+v0.22 adds bounded scoped grants to the Approval Queue. When approving a grantable, non-destructive action, the user can now choose normal approval, `allow-once`, or `allow-for-task`. Matching future approval items are written with status `grant自动确认`, linked to `grant_id`, and audited through `used_by`, `remaining_uses`, expiry timestamps, and used/expired status. Destructive/high-impact actions such as rollback, commit, PR, merge, LingTai lifecycle signals, and avatar spawn/retire explicitly refuse scoped grants and still require per-item confirmation.
+
+Self-check now covers: creating an allow-once grant from a `sensitive_task`, automatic confirmation of the next matching approval, grant exhaustion/audit fields, and refusal of scoped grants for `code_merge`. The UI exposes “确认并允许下一次同类” and “确认并允许本任务同类” buttons when the approval item is grantable. The WeChat bridge accepts `确认下次 <approval_id>` and `确认本任务 <approval_id>` command forms.
+
+Honest boundary: scoped grants are intentionally narrow. They reduce repeated confirmations for bounded, repeatable work, but they do not bypass destructive actions or external irreversible operations.
 
 ## v0.21 Update — Controlled Worker Dispatch Aggregation
 
-v0.21 adds an approval-gated controlled worker dispatch path. `POST /api/task/route` now turns daemon / Codex / Claude / avatar-style requests into local `worker_requests[]` plus a `worker_dispatch` approval. After approval, Simple writes a real LingTai internal mailbox message to a controller agent (default `mimo-2-5-pro`). `POST /api/lingtai/collect` can match controller replies by `worker_request_id`, update local worker/task/dispatch state, and queue a WeChat outbox summary for WeChat-origin requests under the existing `no_second_poller` bridge contract.
+v0.21 added an approval-gated controlled worker dispatch path. `POST /api/task/route` turns daemon / Codex / Claude / avatar-style requests into local `worker_requests[]` plus a `worker_dispatch` approval. After approval, Simple writes a real LingTai internal mailbox message to a controller agent (default `mimo-2-5-pro`). `POST /api/lingtai/collect` can match controller replies by `worker_request_id`, update local worker/task/dispatch state, and queue a WeChat outbox summary for WeChat-origin requests under the existing `no_second_poller` bridge contract.
 
 Honest boundary: Simple does not directly start daemon/Codex/Claude/avatar workers and does not run a second WeChat poller; it coordinates through controller mailbox and explicit approvals.
 
-## v0.21 Update — Budget / Cost Guardrail Panel
+## v0.20 Update — Budget / Cost Guardrail Panel
 
-v0.21 adds a local budget and cost guardrail panel. It exposes `/api/cost/status` and `/api/cost/policy`, adds `cost_policy` to `/api/catalog`, preflights real model calls and Claude Code L1/L2 runs against local caps, creates `budget_override` approval items when a run would exceed policy, and records successful model/Claude Code executions in a local `cost_ledger`. The UI now has a budget/cost big button, dashboard card, and policy modal.
+v0.20 added a local budget and cost guardrail panel. It exposes `/api/cost/status` and `/api/cost/policy`, adds `cost_policy` to `/api/catalog`, preflights real model calls and Claude Code L1/L2 runs against local caps, creates `budget_override` approval items when a run would exceed policy, and records successful model/Claude Code executions in a local `cost_ledger`. The UI has a budget/cost big button, dashboard card, and policy modal.
 
 Honest boundary: this is a local estimate and confirmation guardrail, not a connection to provider billing or account balances. The price table is intentionally conservative and must be calibrated by the user for the exact provider/model.
 
 New / changed endpoints:
 
+- `POST /api/approval/approve` — supports optional `grant_scope=once|task` for grantable non-destructive approvals; destructive actions reject scoped grants.
 - `POST /api/task/route` — classifies one sentence into local task, multi-agent orchestration, insight, soul flow, shougong, real LingTai mailbox dispatch, reply collection, Claude/Codex handoff, or daemon plan.
 - `POST /api/wechat/bridge/pending` — returns `ready_for_bridge` WeChat outbox items with `runner_contract=no_second_poller`.
 - `/api/wechat/bridge/incoming` — default non-command messages now go through the unified router and store `route_id` in the inbound item.
 
 Validation added:
 
-- `scripts/self_check.py` now verifies ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
-- Expected output: `OK LingTai Simple v0.21 self-check passed`.
+- `scripts/self_check.py` now verifies scoped approval grants, ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
+- Expected output: `OK LingTai Simple v0.22 self-check passed`.
 
 Honest boundary:
 
-- v0.21 is still not an autonomous standalone WeChat poller. It is the local routing/contract layer for the existing LingTai WeChat MCP bridge.
+- v0.22 is still not an autonomous standalone WeChat poller. It is the local routing/contract layer for the existing LingTai WeChat MCP bridge.
 - Code-worker and daemon routes intentionally record handoff/plan instead of bypassing the existing Claude Code/daemon confirmation surfaces.
 
 ## v0.17 Update — real LingTai memory / skill index
@@ -54,7 +63,7 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.21 self-check passed`.
+- Expected output: `OK LingTai Simple v0.22 self-check passed`.
 
 
 ## v0.17.1 Download-and-run packaging
@@ -122,7 +131,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.21 self-check passed
+OK LingTai Simple v0.22 self-check passed
 ```
 
 ## Boundaries
@@ -142,7 +151,7 @@ OK LingTai Simple v0.21 self-check passed
 - Bound-card delete now routes to `lingtai_avatar_retire`; raw filesystem deletion remains intentionally absent.
 - Self-check validates bind, delete-to-retire routing, approval execution, and confirms the fake real agent directory remains present.
 
-## v0.21 架构验收矩阵
+## v0.22 架构验收矩阵
 
 新增：
 
@@ -150,7 +159,7 @@ OK LingTai Simple v0.21 self-check passed
 - `GET /api/architecture/status`：本地只读 API，返回机器可读验收状态、证据、缺口、测试命令与下一批优先实现项。
 - 前端新增 **📋 架构验收表** 大按钮和 modal。
 
-诚实边界：v0.21 不是宣称所有架构要求已完成，而是在 v0.17 验收矩阵基础上补上统一 Task Router 与 WeChat pending outbox 合同；下一步优先继续把 Task Router 扩展到受控 daemon/Codex/real avatar 调度与结果汇总，并把成本估算与真实供应商账单/余额（如可用）进一步校准。
+诚实边界：v0.22 不是宣称所有架构要求已完成，而是在 v0.21 worker dispatch 与 v0.20 成本闸基础上补上 Approval Queue 的 scoped grants。下一步仍可继续深化 controller 侧标准执行协议、日志/截图/报告外发确认、以及成本估算与真实供应商账单/余额（如可用）的校准。
 
 
 ## v0.17 Secret Vault health scan
@@ -158,7 +167,7 @@ OK LingTai Simple v0.21 self-check passed
 - 扫描结果只返回位置、字段、严重级别和迁移建议；不会回显任何疑似 key/token 值。
 - `scripts/self_check.py` 会创建临时风险文件验证可检测性，再删除并确认健康检查恢复 OK。
 
-## v0.21 Secret Vault restricted fallback
+## v0.22 Secret Vault restricted fallback
 
 - Keychain 仍为第一优先级；API/state/log/health scan 均不回显 secret value。
 - 新增只读 env fallback：`LINGTAI_SIMPLE_API_KEY_<PROVIDER>`，例如 `LINGTAI_SIMPLE_API_KEY_DEEPSEEK`。

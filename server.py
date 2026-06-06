@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.21 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.22 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.21 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收、受控 worker 调度请求与回信汇总，以及确认后的 lifecycle signal / CPR。
+- v0.22 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收、受控 worker 调度请求与回信汇总，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.21 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.22 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -66,6 +66,17 @@ SENSITIVE_ACTIONS = {
     "worker_dispatch",
 }
 
+# v0.22 scoped approval grants: only bounded, repeatable, non-destructive actions may be
+# auto-confirmed. Git reset / GitHub merge / lifecycle / real avatar operations remain
+# per-item approvals even if the UI accidentally asks for a grant.
+GRANTABLE_APPROVAL_ACTIONS = {
+    "wechat_send", "email_send", "telegram_send",
+    "high_cost_api", "sensitive_task", "budget_override", "worker_dispatch",
+}
+APPROVAL_GRANT_ONCE_TTL_MINUTES = 30
+APPROVAL_GRANT_TASK_TTL_MINUTES = 120
+APPROVAL_GRANT_TASK_MAX_USES = 5
+
 # 供应商目录（OpenAI-compatible /chat/completions）。
 # default_model 仅作为 UI 默认填充；base_url / model 均可在界面编辑。
 PROVIDER_CATALOG = [
@@ -99,7 +110,7 @@ KEYCHAIN_DISABLED = os.environ.get("LINGTAI_SIMPLE_DISABLE_KEYCHAIN", "").strip(
 MODEL_CALL_TIMEOUT = 30          # 秒
 MODEL_CALL_MAX_TOKENS = 256      # 单次测试回复上限
 
-# 累计预算 / 成本面板（v0.21）：所有金额均是本地估算值，不连接供应商账单。
+# 累计预算 / 成本面板（v0.22）：所有金额均是本地估算值，不连接供应商账单。
 # 单位：USD。价格表只用于“先拦截、先提醒”的保守估算；用户可在后续版本改成自己的真实价格表。
 DEFAULT_DAILY_COST_CAP_USD = 1.00
 DEFAULT_PROVIDER_CALL_CAP_USD = 0.05
@@ -831,7 +842,7 @@ def real_model_call(base_url, model, api_key, prompt, max_tokens=MODEL_CALL_MAX_
 
 
 # --------------------------------------------------------------------------
-# 累计预算 / 成本面板（v0.21）
+# 累计预算 / 成本面板（v0.22）
 # --------------------------------------------------------------------------
 
 def _float(value, default=0.0):
@@ -1141,7 +1152,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.21",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.22",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -1150,8 +1161,9 @@ def default_state():
         "agents": [],
         "tasks": [],
         "approvals": [],
+        "approval_grants": [], # v0.22 scoped grants: allow-once / allow-for-task with expiry + audit
         "providers": [],       # 已配置的供应商（脱敏）
-        "cost_policy": {       # v0.21 累计预算/成本策略；估算值，不连接供应商账单
+        "cost_policy": {       # v0.22 累计预算/成本策略；估算值，不连接供应商账单
             "enabled": True,
             "currency": "USD",
             "daily_cap_usd": DEFAULT_DAILY_COST_CAP_USD,
@@ -1164,7 +1176,7 @@ def default_state():
             "overrides": [],
         },
         "cost_ledger": [],     # 真实模型/Claude Code 等可能计费动作的本地估算账本
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.21 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.22 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
@@ -1175,9 +1187,9 @@ def default_state():
             "mark_sent_endpoint": "/api/wechat/bridge/mark_sent",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点和 runner 合约，不启动第二 poller。",
         },
-        "router_runs": [],     # v0.21 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
-        "worker_requests": [],  # v0.21 受控 worker 调度：daemon/Codex/Claude/avatar handoff -> approval -> real LingTai mailbox -> result collection
-        "cc_runs": [],          # Claude Code 运行记录（v0.21 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "router_runs": [],     # v0.22 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
+        "worker_requests": [],  # v0.22 受控 worker 调度：daemon/Codex/Claude/avatar handoff -> approval -> real LingTai mailbox -> result collection
+        "cc_runs": [],          # Claude Code 运行记录（v0.22 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -1187,7 +1199,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.21 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.22 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -1225,14 +1237,15 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.21 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.22 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.21"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.22"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
     state.setdefault("approvals", [])
+    state.setdefault("approval_grants", [])
     state.setdefault("providers", [])
     state.setdefault("cost_policy", base["cost_policy"])
     for k, v in base["cost_policy"].items():
@@ -1303,7 +1316,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.21 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.22 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -1608,7 +1621,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.21 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.22 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -1617,7 +1630,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.21")
+                                    via="lingtai-simple-v0.22")
     if err:
         return None, err
     dispatch = {
@@ -1808,7 +1821,7 @@ def worker_request_apply_real(state, ap):
     kind = ap.get("worker_kind") or wr.get("kind") or "worker"
     subject = f"LingTai Simple 受控 worker 调度：{_worker_kind_label(kind)} / {worker_request_id}"
     message = (
-        "【LingTai Simple v0.21 受控 worker 调度】\n\n"
+        "【LingTai Simple v0.22 受控 worker 调度】\n\n"
         f"worker_request_id：{worker_request_id}\n"
         f"本地任务 ID：{wr.get('task_id') or ap.get('task_id') or ''}\n"
         f"请求类型：{_worker_kind_label(kind)}\n"
@@ -1822,7 +1835,7 @@ def worker_request_apply_real(state, ap):
         "任务内容：\n" + desc
     )
     result, err = _drop_lingtai_mail(to_address=controller, subject=subject, message=message,
-                                    via="lingtai-simple-v0.21-worker")
+                                    via="lingtai-simple-v0.22-worker")
     if err:
         wr["status"] = "dispatch_failed"
         wr["error"] = err
@@ -2441,15 +2454,130 @@ def set_agent_status(state, agent_id, action):
     return agent, None
 
 
-def add_approval(state, payload):
-    action = payload.get("action") or "unknown"
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _approval_grant_expired(grant, now_dt=None):
+    now_dt = now_dt or datetime.now(timezone.utc).astimezone()
+    expires = _parse_iso_datetime(grant.get("expires_at"))
+    return bool(expires and expires <= now_dt)
+
+
+def approval_grant_status(state):
+    """Return scoped grant status and mark expired/used grants without deleting audit history."""
+    grants = state.setdefault("approval_grants", [])
+    now_dt = datetime.now(timezone.utc).astimezone()
+    for grant in grants:
+        if grant.get("status") == "active" and _approval_grant_expired(grant, now_dt):
+            grant["status"] = "expired"
+            grant["ended_at"] = now_iso()
+        if grant.get("status") == "active" and int(grant.get("uses_remaining", 0) or 0) <= 0:
+            grant["status"] = "used"
+            grant.setdefault("ended_at", now_iso())
+    active = [g for g in grants if g.get("status") == "active"]
+    return {
+        "active_count": len(active),
+        "active": active[:20],
+        "recent": grants[:40],
+        "grantable_actions": sorted(GRANTABLE_APPROVAL_ACTIONS),
+        "policy": {
+            "once_ttl_minutes": APPROVAL_GRANT_ONCE_TTL_MINUTES,
+            "task_ttl_minutes": APPROVAL_GRANT_TASK_TTL_MINUTES,
+            "task_max_uses": APPROVAL_GRANT_TASK_MAX_USES,
+            "destructive_actions_per_item_only": sorted(set(SENSITIVE_ACTIONS) - GRANTABLE_APPROVAL_ACTIONS),
+        },
+    }
+
+
+def _approval_grant_matches(grant, action, payload):
+    if grant.get("status") != "active":
+        return False
+    if grant.get("action") != action:
+        return False
+    if _approval_grant_expired(grant):
+        grant["status"] = "expired"
+        grant["ended_at"] = now_iso()
+        return False
+    if int(grant.get("uses_remaining", 0) or 0) <= 0:
+        grant["status"] = "used"
+        grant.setdefault("ended_at", now_iso())
+        return False
+    scope = grant.get("scope")
+    if scope == "task":
+        # Task grants are deliberately narrow: same action + same task_id, and when present,
+        # same agent_id. They do not become a global bypass.
+        if not grant.get("task_id") or grant.get("task_id") != payload.get("task_id"):
+            return False
+        if grant.get("agent_id") and payload.get("agent_id") and grant.get("agent_id") != payload.get("agent_id"):
+            return False
+    elif scope != "once":
+        return False
+    return True
+
+
+def _consume_approval_grant(state, action, payload):
+    if action not in GRANTABLE_APPROVAL_ACTIONS:
+        return None
+    approval_grant_status(state)
+    for grant in state.setdefault("approval_grants", []):
+        if _approval_grant_matches(grant, action, payload):
+            grant["uses_remaining"] = max(0, int(grant.get("uses_remaining", 0) or 0) - 1)
+            grant.setdefault("used_by", [])
+            if grant["uses_remaining"] <= 0:
+                grant["status"] = "used"
+                grant["ended_at"] = now_iso()
+            return grant
+    return None
+
+
+def create_approval_grant_from_approval(state, ap, scope):
+    scope = (scope or "").strip().lower()
+    if scope not in ("once", "task"):
+        return None, "未知授权范围；只能是 once 或 task"
+    action = ap.get("action")
+    if action not in GRANTABLE_APPROVAL_ACTIONS:
+        return None, f"{action} 属于逐项确认动作，不能创建 scoped grant"
+    if scope == "task" and not ap.get("task_id"):
+        return None, "allow-for-task 需要该确认项绑定 task_id"
+    now_dt = datetime.now(timezone.utc).astimezone()
+    ttl_minutes = APPROVAL_GRANT_ONCE_TTL_MINUTES if scope == "once" else APPROVAL_GRANT_TASK_TTL_MINUTES
+    uses = 1 if scope == "once" else APPROVAL_GRANT_TASK_MAX_USES
+    grant = {
+        "id": new_id("grant"),
+        "scope": scope,
+        "action": action,
+        "task_id": ap.get("task_id") if scope == "task" else None,
+        "agent_id": ap.get("agent_id") if scope == "task" else None,
+        "uses_remaining": uses,
+        "uses_total": uses,
+        "status": "active",
+        "created_at": now_iso(),
+        "expires_at": (now_dt + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds"),
+        "source_approval_id": ap.get("id"),
+        "reason": f"确认 {ap.get('title', action)} 后创建的 {'下一次同类' if scope == 'once' else '本任务同类'}授权",
+        "used_by": [],
+    }
+    state.setdefault("approval_grants", []).insert(0, grant)
+    state["approval_grants"] = state["approval_grants"][:80]
+    log_event(state, f"已创建 scoped approval grant：{grant['id']} / {action} / {scope}", kind="approval")
+    return grant, None
+
+
+def _build_approval_record(payload, action=None):
+    action = action or payload.get("action") or "unknown"
     ap = {
         "id": new_id("appr"),
         "action": action,
         "title": redact(payload.get("title") or action),
         "detail": redact(payload.get("detail") or ""),
         "risk": "sensitive" if action in SENSITIVE_ACTIONS else "info",
-        "status": "待确认",   # 待确认 / 已确认 / 已拒绝
+        "status": "待确认",   # 待确认 / 已确认 / 已拒绝 / grant自动确认
         "created_at": now_iso(),
         "preview": redact(payload.get("preview") or build_preview(action, payload)),
         "task_id": payload.get("task_id"),
@@ -2461,10 +2589,31 @@ def add_approval(state, payload):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
         ap["commit_changed_files"] = [str(x) for x in payload.get("commit_changed_files", [])][:120]
+    return ap
+
+
+def add_approval(state, payload):
+    action = payload.get("action") or "unknown"
+    grant = _consume_approval_grant(state, action, payload)
+    ap = _build_approval_record(payload, action)
+    if grant:
+        ap["status"] = "grant自动确认"
+        ap["grant_id"] = grant["id"]
+        ap["auto_confirmed_at"] = now_iso()
+        state["approvals"].insert(0, ap)
+        grant.setdefault("used_by", []).append(ap["id"])
+        log_event(state, f"scoped grant 自动确认：{ap['title']}（grant {grant['id']}）", kind="approval")
+        err = _apply_approved_action(state, ap)
+        if err:
+            ap["status"] = "执行失败"
+            ap["result"] = err
+            log_event(state, f"grant 自动执行失败：{ap['title']}（{err[:80]}）", kind="approval")
+        else:
+            log_event(state, f"grant 已自动执行：{ap['title']}", kind="approval")
+        return ap
     state["approvals"].insert(0, ap)
     log_event(state, f"确认队列新增：{ap['title']}", kind="approval")
     return ap
-
 
 def build_preview(action, payload):
     detail = payload.get("detail") or ""
@@ -2487,12 +2636,19 @@ def build_preview(action, payload):
     return previews.get(action, f"[预览]\n{detail}")
 
 
-def resolve_approval(state, approval_id, decision):
+def resolve_approval(state, approval_id, decision, grant_scope=None):
+    grant_scope = (grant_scope or "").strip().lower()
     for ap in state["approvals"]:
         if ap["id"] == approval_id:
             if ap["status"] != "待确认":
                 return None, "该项已处理"
             if decision == "approve":
+                if grant_scope and ap.get("action") not in GRANTABLE_APPROVAL_ACTIONS:
+                    return None, f"{ap.get('action')} 必须逐项确认，不能创建 scoped grant；请用普通确认。"
+                if grant_scope == "task" and not ap.get("task_id"):
+                    return None, "allow-for-task 需要该确认项绑定 task_id；请用普通确认或 allow-once。"
+                if grant_scope and grant_scope not in ("once", "task"):
+                    return None, "未知授权范围；只能是 once 或 task"
                 ap["status"] = "已确认"
                 err = _apply_approved_action(state, ap)
                 if err:
@@ -2501,6 +2657,13 @@ def resolve_approval(state, approval_id, decision):
                     log_event(state, f"确认后执行失败：{ap['title']}（{err[:80]}）", kind="approval")
                 else:
                     log_event(state, f"已确认并执行：{ap['title']}", kind="approval")
+                    if grant_scope:
+                        grant, grant_err = create_approval_grant_from_approval(state, ap, grant_scope)
+                        if grant_err:
+                            ap["grant_error"] = grant_err
+                            log_event(state, f"scoped grant 创建失败：{grant_err}", kind="approval")
+                        else:
+                            ap["created_grant_id"] = grant["id"]
             else:
                 ap["status"] = "已拒绝"
                 # 关联任务标记拒绝
@@ -2514,7 +2677,6 @@ def resolve_approval(state, approval_id, decision):
                 log_event(state, f"已拒绝：{ap['title']}", kind="approval")
             return ap, None
     return None, "找不到该确认项"
-
 
 def _apply_approved_action(state, ap):
     """确认后的执行。rollback_apply 与 code_commit 会产生真实本地 git 副作用。"""
@@ -2605,7 +2767,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.21 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.22 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -2786,7 +2948,7 @@ def prepare_model_test(state, payload):
 
 
 # --------------------------------------------------------------------------
-# Unified Task Router / WeChat runner contract (v0.21)
+# Unified Task Router / WeChat runner contract (v0.22)
 # --------------------------------------------------------------------------
 
 def _first_available_agent(state, *, fallback_name="微信主控灵", fallback_role="长期助手", lingtai_address=""):
@@ -3096,7 +3258,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.21 当前状态：",
+        "圆酱，LingTai Simple v0.22 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -3168,6 +3330,12 @@ def wechat_bridge_incoming(state, payload):
         item["status"] = "完成"
         item["stages"].append("状态已生成")
         reply = _bridge_status_text(state)
+    elif lower.startswith(("确认下次 ", "approve-once ", "approve once ")):
+        approval_id = text.split(maxsplit=1)[1].strip()
+        ap, err = resolve_approval(state, approval_id, "approve", "once")
+    elif lower.startswith(("确认本任务 ", "approve-task ", "approve task ")):
+        approval_id = text.split(maxsplit=1)[1].strip()
+        ap, err = resolve_approval(state, approval_id, "approve", "task")
     elif lower.startswith(("确认 ", "approve ")):
         approval_id = text.split(maxsplit=1)[1].strip()
         ap, err = resolve_approval(state, approval_id, "approve")
@@ -3233,7 +3401,7 @@ def wechat_bridge_incoming(state, payload):
         item["stages"].append("收功单已生成")
         reply = f"已生成收功单：{sg['path']}\n\n你可以先离屏休息；回来按收功单继续。"
     else:
-        # 默认入口统一交给 v0.21 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
+        # 默认入口统一交给 v0.22 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
         routed, err = route_task(state, {
             "text": text, "source": "wechat_bridge",
             "confirm_dispatch": bool(payload.get("confirm_dispatch")),
@@ -3280,7 +3448,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.21（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.22（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -3826,7 +3994,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.21 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.22 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -4378,7 +4546,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.21 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.22 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -4399,10 +4567,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.21（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.22（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.21 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.22 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -4617,7 +4785,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:115-128",
         "status": "partial",
         "evidence": "已有 /api/task/assign、/api/agent/orchestrate、洞察、心流、收功、LingTai mailbox dispatch/collect；敏感任务进入 Approval Queue。",
-        "gap": "v0.21 已完成“确认闸 + controller 内部邮箱 + worker_request_id 回信汇总”，包括 WeChat 来源结果进入 no_second_poller outbox；但 Simple 本身仍不直接启动 daemon/Codex/Claude/avatar，也不绕过既有安全纪律。",
+        "gap": "v0.22 已完成“确认闸 + controller 内部邮箱 + worker_request_id 回信汇总”，包括 WeChat 来源结果进入 no_second_poller outbox；但 Simple 本身仍不直接启动 daemon/Codex/Claude/avatar，也不绕过既有安全纪律。",
         "test": "python3 scripts/self_check.py（覆盖本地编排、真实 mailbox dispatch fake 网络、worker_dispatch 确认闸、controller mailbox 与回复回收）。",
     },
     {
@@ -4636,7 +4804,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "首批 GPT/OpenAI-compatible、MiMo、DeepSeek、MiniMax、GLM、自定义 base_url+api_key+model；连接测试、状态、能力标签、cost 上限/告警。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:145-167",
         "status": "partial",
-        "evidence": "PROVIDER_CATALOG 已含 6 类供应商；API key 进 Keychain/env/.secrets 受限 fallback；/api/model/test 可对 OpenAI-compatible chat/completions 做真实调用，需 confirm_cost；v0.21 增加 /api/cost/status、/api/cost/policy、本地价格表、单次 provider cap、日 cap、任务 cap 与模型调用预算预检，越线先生成 budget_override approval。",
+        "evidence": "PROVIDER_CATALOG 已含 6 类供应商；API key 进 Keychain/env/.secrets 受限 fallback；/api/model/test 可对 OpenAI-compatible chat/completions 做真实调用，需 confirm_cost；v0.22 增加 /api/cost/status、/api/cost/policy、本地价格表、单次 provider cap、日 cap、任务 cap 与模型调用预算预检，越线先生成 budget_override approval。",
         "gap": "MiMo/MiniMax 端点需用户填写兼容 base_url；预算/成本仍是本地估算，不连接供应商真实账单/余额，默认价格表需要按实际 provider/model 校准。",
         "test": "python3 scripts/self_check.py（验证未确认费用会拒绝、预算越线生成 budget_override、key 不落盘）；真实模型测试需用户显式 confirm_cost。",
     },
@@ -4656,9 +4824,9 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "外发、commit/push/PR/merge、删除/公开/权限、rollback、高成本 API、Claude Code 写操作、导出日志截图报告均需确认；显示 actor/action/scope/diff/message/cost。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:184-202",
         "status": "partial",
-        "evidence": "已有确认队列与 approve/deny；覆盖 rollback、delete_agent、sensitive task、Claude L3/L4/L5、LingTai lifecycle/avatar、PR/merge 等；UI 显示说明和预览文本。",
-        "gap": "预算越线已有 30 分钟短时 override；但还没有通用 allow-once/allow-for-task 的细粒度授权；日志/截图/报告导出确认尚未单独实现；未越线的真实 API 调用仍采用 confirm_cost checkbox 而非队列项。",
-        "test": "python3 scripts/self_check.py；destructive rollback/commit smoke 在隔离副本中验证。",
+        "evidence": "已有确认队列与 approve/deny；覆盖 rollback、delete_agent、sensitive task、Claude L3/L4/L5、LingTai lifecycle/avatar、PR/merge 等；UI 显示说明和预览文本。v0.22 新增 scoped approval grants：可对非破坏性/可重复动作创建 allow-once 或 allow-for-task，带 expires_at、uses_remaining、used_by 审计，下一次匹配动作可自动确认。",
+        "gap": "破坏性动作（rollback、merge、lifecycle、真实 avatar 等）仍刻意逐项确认，不能授权批量自动执行；日志/截图/报告导出确认尚未单独实现；未越线的真实 API 调用仍采用 confirm_cost checkbox 而非队列项。",
+        "test": "python3 scripts/self_check.py 覆盖 scoped grant 创建、自动确认、用尽审计、破坏性动作拒绝授权；destructive rollback/commit smoke 在隔离副本中验证。",
     },
     {
         "id": "A08",
@@ -4676,7 +4844,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
         "status": "done",
-        "evidence": "v0.21 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "evidence": "v0.22 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
         "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
         "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
     },
@@ -4710,7 +4878,7 @@ def architecture_acceptance_status():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     return {
         "ok": True,
-        "version": "v0.21",
+        "version": "v0.22",
         "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
         "summary": {
             "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
@@ -4721,7 +4889,7 @@ def architecture_acceptance_status():
         "next_recommended_work": [
             "继续把本地预算/成本估算校准到更多 provider/model，并在可用时接供应商真实账单/余额只读查询。",
             "继续把 controller 侧 worker 执行协议标准化，让受控 worker 调度从“写信交办/回信汇总”进一步变成更稳定的可执行模板。",
-            "把 Secret Vault 状态与模型调用成本/确认队列做更细粒度联动。",
+            "补日志/截图/报告导出的单独确认闸，并评估真实 API 调用是否也统一进入 Approval Queue 而不只用 confirm_cost checkbox。",
         ],
     }
 
@@ -4746,7 +4914,7 @@ def health_check():
     required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir", "secret_vault_scan")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.21",
+        "version": "v0.22",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -4770,6 +4938,7 @@ def health_check():
             "real LingTai mailbox result collection: Simple can read matching replies from reply_inbox",
             "real LingTai lifecycle signals: confirmation-gated lull/suspend/interrupt/clear/CPR (no filesystem deletion, no nirvana)",
             "real LingTai durable-store index: read-only pad/knowledge/custom skills/shared skills/summaries view",
+            "real scoped approval grants: allow-once / allow-for-task for bounded non-destructive repeat approvals; destructive actions stay per-item",
             "not connected yet: autonomous standalone WeChat poller",
             "Secret Vault health scan reports plaintext-key risks and unsafe fallback permissions without returning values",
             "no plaintext API key in JSON/logs/responses (Keychain-first; restricted env/.secrets fallback)",
@@ -4782,7 +4951,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.20"
+    server_version = "LingTaiSimple/0.22"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -5022,8 +5191,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/agent/pause": lambda s, p: set_agent_status(s, p.get("agent_id"), "pause"),
             "/api/agent/resume": lambda s, p: set_agent_status(s, p.get("agent_id"), "resume"),
             "/api/agent/delete": lambda s, p: set_agent_status(s, p.get("agent_id"), "delete"),
-            "/api/approval/add": lambda s, p: add_approval(s, p),
-            "/api/approval/approve": lambda s, p: resolve_approval(s, p.get("approval_id"), "approve"),
+            "/api/approval/add": lambda s, p: (add_approval(s, p), None),
+            "/api/approval/approve": lambda s, p: resolve_approval(s, p.get("approval_id"), "approve", p.get("grant_scope")),
             "/api/approval/deny": lambda s, p: resolve_approval(s, p.get("approval_id"), "deny"),
             "/api/provider/save": lambda s, p: save_provider(s, p),
             "/api/provider/delete_key": lambda s, p: delete_provider_key(s, p),
@@ -5057,6 +5226,7 @@ class Handler(BaseHTTPRequestHandler):
             "agents": state["agents"],
             "tasks": state["tasks"][:30],
             "approvals": state["approvals"][:30],
+            "approval_grants": approval_grant_status(state),
             "providers": safe_providers,
             "cost_policy": public_cost_policy(state),
             "cost_status": cost_status(state),
@@ -5082,6 +5252,7 @@ class Handler(BaseHTTPRequestHandler):
                 "agent_count": len(state["agents"]),
                 "max_agents": MAX_AGENTS,
                 "pending_approvals": len([a for a in state["approvals"] if a["status"] == "待确认"]),
+                "active_approval_grants": approval_grant_status(state).get("active_count", 0),
                 "active_tasks": len([t for t in state["tasks"] if t["status"] in ("排队中", "执行中", "等确认")]),
                 "today_estimated_cost_usd": cost_status(state).get("today_total_usd", 0.0),
             },
@@ -5149,7 +5320,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.21 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.22 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")
