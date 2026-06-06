@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-圆酱专属轻量版灵台 / LingTai Simple v0.16 — 本地原型服务器
+圆酱专属轻量版灵台 / LingTai Simple v0.17 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
-- v0.16 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
+- v0.17 已真实接入：Keychain 密钥保险柜、OpenAI-compatible 模型 API 调用、git Time Machine / rollback、微信桥接入口、Claude Code L1-L5 执行闸、多 agent/洞察/心流、LingTai 内部邮箱派发、真实 agent 回复回收，以及确认后的 lifecycle signal / CPR。
 - 微信桥接不启动第二个 poller、不保存微信凭证；真实收发仍由当前 LingTai WeChat MCP 作为唯一桥接者完成。
 - Claude Code L1 只读分析与 L2 本地改码已真实接入（需显式确认可能产生费用；L2 会修改本仓库文件）；commit、PR、merge 均已接入确认闸；L4 会真实 push 分支并创建 GitHub PR，L5 会在确认后真实合并指定 PR。
 - 不保存明文 API key 到 JSON / 日志 / API 响应；明文 key 只存进 Mac Keychain。
 
-v0.16 的「真实能力」（与 v0.2 的纯 mock 不同）：
+v0.17 的「真实能力」（与 v0.2 的纯 mock 不同）：
 - 通过 macOS Security.framework 把 API key 存进系统 Keychain（fallback：清晰报错，绝不落明文）。
 - 对 OpenAI-compatible /chat/completions 端点发起**真实**网络请求（需用户在 UI 显式点击，
   并明确标注「可能产生费用」）。
@@ -173,6 +173,148 @@ def redact(text):
     for pat in _SECRET_PATTERNS:
         out = pat.sub("****REDACTED****", out)
     return out
+
+
+_SECRET_FIELD_RE = re.compile(r"(^|[_\-])(api[_\-]?key|token|secret|password|bearer|authorization)($|[_\-])", re.IGNORECASE)
+_SAFE_SECRET_FIELD_RE = re.compile(r"(keychain|key_last4|last4|key_label|label|configured|in_keychain)", re.IGNORECASE)
+_SECRET_VALUE_RE = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{12,}|Bearer\s+[A-Za-z0-9_\-\.]{12,}|[A-Za-z0-9_\-]{32,})",
+    re.IGNORECASE,
+)
+_SECRET_PLACEHOLDER_RE = re.compile(r"(fake|dummy|example|placeholder|not[_-]?real|redacted|xxxx|\*\*\*)", re.IGNORECASE)
+
+
+def _is_sensitive_field(name):
+    name = str(name or "")
+    return bool(_SECRET_FIELD_RE.search(name)) and not _SAFE_SECRET_FIELD_RE.search(name)
+
+
+def _looks_plain_secret(value, *, field_sensitive=False):
+    """High-confidence plaintext secret heuristic; never returns or logs the value."""
+    if not isinstance(value, str):
+        return False
+    raw = value.strip()
+    if not raw or _SECRET_PLACEHOLDER_RE.search(raw):
+        return False
+    if _SECRET_VALUE_RE.search(raw):
+        return True
+    return bool(field_sensitive and len(raw) >= 12)
+
+
+def _scan_json_secret_fields(obj, path=""):
+    risks = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            field_path = f"{path}.{key}" if path else str(key)
+            sensitive = _is_sensitive_field(key)
+            if isinstance(value, (dict, list)):
+                risks.extend(_scan_json_secret_fields(value, field_path))
+            elif _looks_plain_secret(value, field_sensitive=sensitive):
+                risks.append({
+                    "severity": "high" if sensitive else "medium",
+                    "kind": "json_sensitive_field" if sensitive else "secret_like_value",
+                    "field_path": field_path,
+                    "action": "把明文值移入 Mac Keychain 或受限 env/.secrets；state/示例/日志中只保留 last4/label/in_keychain。",
+                })
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj):
+            risks.extend(_scan_json_secret_fields(value, f"{path}[{idx}]"))
+    return risks
+
+
+def _scan_text_secret_lines(text):
+    risks = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if _SECRET_PLACEHOLDER_RE.search(line):
+            continue
+        # Assignment-style secret fields are high confidence; arbitrary long tokens are medium.
+        if re.search(r"(?i)(api[_-]?key|token|secret|password|authorization|bearer)\s*[:=]\s*['\"]?[^'\"\s]{12,}", line):
+            risks.append({"severity": "high", "kind": "text_secret_assignment", "line": lineno,
+                          "action": "删除此明文配置，改存 Keychain；提交/汇报前重新跑健康检查。"})
+        elif _SECRET_VALUE_RE.search(line):
+            risks.append({"severity": "medium", "kind": "secret_like_text", "line": lineno,
+                          "action": "核对此长串是否为凭证；若是，移入 Keychain/受限 env 并从文件删除。"})
+    return risks[:20]
+
+
+def secret_vault_health_scan():
+    """Read-only plaintext secret risk scan. Values are never returned."""
+    candidates = []
+    for path in (Path(STATE_PATH), Path(EXAMPLE_STATE_PATH), Path(BASE_DIR) / ".env", Path(BASE_DIR) / ".env.local"):
+        if path.exists() and path.is_file():
+            candidates.append(path)
+    data_dir = Path(DATA_DIR)
+    if data_dir.exists():
+        for path in sorted(data_dir.glob("*.json")):
+            if path not in candidates:
+                candidates.append(path)
+    secrets_dir = Path(BASE_DIR) / ".secrets"
+    warnings = []
+    if secrets_dir.exists():
+        try:
+            mode = secrets_dir.stat().st_mode & 0o777
+            warnings.append({
+                "severity": "medium" if mode & 0o077 else "info",
+                "kind": "secrets_dir_present",
+                "location": ".secrets/",
+                "mode": oct(mode),
+                "action": "若使用 .secrets fallback，应限制为 0700/0600；健康检查不会回显内容。",
+            })
+            for path in sorted(secrets_dir.glob("*.json"))[:8]:
+                candidates.append(path)
+        except OSError:
+            warnings.append({"severity": "medium", "kind": "secrets_dir_unreadable", "location": ".secrets/"})
+
+    risks = []
+    files_scanned = []
+    for path in candidates[:40]:
+        rel = os.path.relpath(path, BASE_DIR)
+        try:
+            if path.stat().st_size > 2_000_000:
+                warnings.append({"severity": "info", "kind": "file_skipped_large", "location": rel})
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            warnings.append({"severity": "medium", "kind": "file_unreadable", "location": rel})
+            continue
+        files_scanned.append(rel)
+        file_risks = []
+        if path.suffix.lower() == ".json":
+            try:
+                file_risks.extend(_scan_json_secret_fields(json.loads(text)))
+            except Exception:
+                file_risks.extend(_scan_text_secret_lines(text))
+        else:
+            file_risks.extend(_scan_text_secret_lines(text))
+        for risk in file_risks[:20]:
+            risk["location"] = rel
+            risks.append(risk)
+
+    env_names = []
+    for name in sorted(os.environ):
+        upper = name.upper()
+        if upper.startswith("LINGTAI_SIMPLE_") and any(x in upper for x in ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "BEARER")):
+            env_names.append(name)
+    if env_names:
+        warnings.append({
+            "severity": "info",
+            "kind": "sensitive_env_slots_present",
+            "env_names": env_names[:20],
+            "action": "env slot 只作为受限 fallback；不要在日志/报告/微信中回显变量值。",
+        })
+
+    high = sum(1 for r in risks if r.get("severity") == "high")
+    medium = sum(1 for r in risks if r.get("severity") == "medium")
+    return {
+        "ok": high == 0,
+        "scanned_at": now_iso(),
+        "keychain_available": keychain_available(),
+        "policy": "Keychain-first; no plaintext API key in JSON/log/API responses; scan returns only locations/fields, never values.",
+        "summary": {"high": high, "medium": medium, "warnings": len(warnings), "files_scanned": len(files_scanned)},
+        "files_scanned": files_scanned,
+        "risks": risks[:60],
+        "warnings": warnings[:40],
+    }
 
 
 def key_last4(raw_key):
@@ -486,7 +628,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.16",
+            "name": "圆酱专属轻量版灵台 / LingTai Simple v0.17",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -496,14 +638,14 @@ def default_state():
         "tasks": [],
         "approvals": [],
         "providers": [],       # 已配置的供应商（脱敏）
-        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.16 支持真实桥接写入）
+        "wechat_inbox": [],    # 微信入口收到的任务队列（v0.17 支持真实桥接写入）
         "wechat_outbox": [],   # 待桥接者原路发回微信的回复（不由本服务直接轮询/发送，避免双 poller）
         "wechat_bridge": {
             "mode": "lingtai_mcp_bridge",
             "status": "ready",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点。",
         },
-        "cc_runs": [],          # Claude Code 运行记录（v0.16 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
+        "cc_runs": [],          # Claude Code 运行记录（v0.17 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
         "soul_flows": [],       # 心流记录：阶段性回环、自省与续功入口
@@ -513,7 +655,7 @@ def default_state():
             "network_dir": LINGTAI_NETWORK_DIR,
             "sender": LINGTAI_MAIL_SENDER,
             "reply_inbox": LINGTAI_REPLY_INBOX,
-            "note": "v0.16 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
+            "note": "v0.17 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。",
         },
         "lingtai_dispatches": [], # 已写入 LingTai 内部邮箱 outbox 的真实派活记录
         "lingtai_mail_results": [], # 从真实 LingTai reply_inbox 只读回收的 agent 回复
@@ -551,10 +693,10 @@ def save_state(state):
 
 
 def normalize_state(state):
-    """兼容旧版本 state.json：补齐 v0.16 新字段，避免升级后丢状态。"""
+    """兼容旧版本 state.json：补齐 v0.17 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.16"
+    state["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.17"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -619,7 +761,7 @@ def create_agent(state, payload):
         "created_at": now_iso(),
         "recent_tasks": [],
         "context_base": 12,
-        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.16 起可派发内部邮箱任务
+        "lingtai_address": lingtai_address,  # 可选：真实 LingTai agent 地址；v0.17 起可派发内部邮箱任务
     }
     agent["context_pressure"] = estimate_context_pressure(agent)
     state["agents"].append(agent)
@@ -924,7 +1066,7 @@ def dispatch_task_to_lingtai(state, payload):
     if not subject:
         subject = "LingTai Simple 派活：" + _bounded(body.replace("\n", " "), 48)
     message = (
-        "【LingTai Simple v0.16 真实内部邮箱派活】\n\n"
+        "【LingTai Simple v0.17 真实内部邮箱派活】\n\n"
         f"来源：圆酱专属轻量版灵台（localhost Simple UI / WeChat bridge）\n"
         f"本地任务 ID：{task_id or 'manual'}\n"
         f"本地灵：{(agent or {}).get('name') or '未绑定'}\n\n"
@@ -933,7 +1075,7 @@ def dispatch_task_to_lingtai(state, payload):
         "任务内容：\n" + body
     )
     result, err = _drop_lingtai_mail(to_address=address, subject=subject, message=message,
-                                    via="lingtai-simple-v0.16")
+                                    via="lingtai-simple-v0.17")
     if err:
         return None, err
     dispatch = {
@@ -1708,7 +1850,7 @@ def _apply_approved_action(state, ap):
             if t["id"] == ap["task_id"]:
                 t["status"] = "完成"
                 if action in ("wechat_send", "email_send", "telegram_send", "sensitive_task"):
-                    t["result"] = f"已确认：{action}；当前 v0.16 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
+                    t["result"] = f"已确认：{action}；当前 v0.17 对该通用动作仅完成本地确认/记录；已有专门执行器的 rollback、code_commit、code_pr、code_merge 会走真实执行路径。"
                 else:
                     t["result"] = f"已确认并执行：{action}"
                 ag = find_agent(state, t["agent_id"])
@@ -1921,7 +2063,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，LingTai Simple v0.16 当前状态：",
+        "圆酱，LingTai Simple v0.17 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -2087,7 +2229,7 @@ def wechat_bridge_incoming(state, payload):
             item["status"] = "完成"
             item["task_id"] = task["id"]
             item["stages"].append("任务已记录")
-            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.16 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
+            reply = "收到，已通过真实微信桥接写入 LingTai Simple 任务队列。\n当前 v0.17 会真实记录/多 agent 编排/洞察/心流/确认，并可真实派发到 LingTai 内部邮箱；rollback、Claude Code L1/L2/L3/L4/L5 已接入对应真实执行闸；任意外发、commit、merge 等敏感动作都会先进入确认队列。\n可微信发：状态 / 收功 / 快照 <标签> / 回滚列表。"
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
@@ -2117,7 +2259,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> 圆酱专属轻量版灵台 v0.16（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> 圆酱专属轻量版灵台 v0.17（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -2663,7 +2805,7 @@ def prepare_github_pr_approval(state, payload):
         return None, err
     default_body = "\n".join([
         "## Summary",
-        f"- Created by Yuanjiang LingTai Simple v0.16 after explicit confirmation.",
+        f"- Created by Yuanjiang LingTai Simple v0.17 after explicit confirmation.",
         f"- Base: `{base_branch}`",
         f"- Head commit: `{head_commit[:12]}`",
         "",
@@ -3197,7 +3339,7 @@ def run_claude_code_local_edit(run, desc):
 
 
 def request_cc_task(state, payload):
-    """Claude Code 苦力卡：v0.16 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
+    """Claude Code 苦力卡：v0.17 真实接入 L1/L2/L3/L4/L5；所有高危动作走确认闸。"""
     level = parse_level(payload.get("level"), 1)
     if level == 1:
         return None, "Claude Code L1 只读分析已是 真实外部调用；请通过专用处理器并勾选费用确认。"
@@ -3218,10 +3360,10 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.16（示例模式）"
+    demo["meta"]["name"] = "圆酱专属轻量版灵台 / LingTai Simple v0.17（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
-    log_event(demo, "加载示例数据：圆酱专属灵台 v0.16 demo")
+    log_event(demo, "加载示例数据：圆酱专属灵台 v0.17 demo")
     save_state(demo)
     return {"loaded_demo": True, "agents": len(demo.get("agents", []))}, None
 
@@ -3465,9 +3607,9 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "Mac Keychain 优先；fallback .secrets/env slot 权限受限；启动扫描明文 key 风险；日志/报告/prompt/微信回复脱敏。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:169-182",
         "status": "partial",
-        "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；self_check 用假 key 验证不落盘；基础 secret scan 已用于提交前。",
-        "gap": "尚未实现受限 .secrets/env fallback；启动时明文 key 风险扫描还未作为 health check 结构化展示。",
-        "test": "python3 scripts/self_check.py（Keychain 可用性与 state 脱敏）；提交前高置信秘密扫描。",
+        "evidence": "Keychain 通过 Security.framework/ctypes 写入，API 响应和 state 不回显 key；/api/health 现返回 secret_vault 结构化扫描，只给位置/字段/行动建议，不回显值；self_check 用假 key 和临时风险文件验证不落盘与可检测。",
+        "gap": "尚未实现受限 .secrets/env fallback；价格/预算策略仍需与 Secret Vault 联动。",
+        "test": "python3 scripts/self_check.py（Keychain 可用性、state 脱敏、Secret Vault health scan）；提交前高置信秘密扫描。",
     },
     {
         "id": "A07",
@@ -3495,7 +3637,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
         "status": "done",
-        "evidence": "v0.16 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "evidence": "v0.17 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
         "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
         "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
     },
@@ -3529,7 +3671,7 @@ def architecture_acceptance_status():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     return {
         "ok": True,
-        "version": "v0.16",
+        "version": "v0.17",
         "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
         "summary": {
             "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
@@ -3540,7 +3682,7 @@ def architecture_acceptance_status():
         "next_recommended_work": [
             "补 standalone WeChat bridge runner：不启动第二 poller，只消费当前 LingTai MCP 桥接出的消息并负责 ACK/回传。",
             "把 Task Router 升级为统一调度器：普通任务/真实 avatar/daemon/Claude/Codex/mailbox 派发与结果汇总。",
-            "补 Secret Vault health 扫描：启动时发现明文 key 风险并给迁移提示。",
+            "补受限 .secrets/env fallback：作为 Keychain 不可用时的明确、权限受限备用槽，仍需健康检查和脱敏。",
             "补累计预算/成本面板：provider/任务维度 cost cap、长跑告警与确认队列联动。",
         ],
     }
@@ -3548,6 +3690,7 @@ def architecture_acceptance_status():
 
 def health_check():
     """本地健康检查：只读，不触发外部动作。"""
+    secret_scan = secret_vault_health_scan()
     checks = {
         "localhost_only": HOST in ("127.0.0.1", "localhost", "::1"),
         "static_index": os.path.exists(os.path.join(STATIC_DIR, "index.html")),
@@ -3560,15 +3703,17 @@ def health_check():
         "claude_code_available": claude_code_available(),
         "github_cli_available": shutil.which("gh") is not None,
         "lingtai_network_dir": _lingtai_network_path() is not None,
+        "secret_vault_scan": secret_scan.get("ok", False),
     }
-    required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir")
+    required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir", "secret_vault_scan")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.16",
+        "version": "v0.17",
         "host": HOST,
         "port": PORT,
         "checks": checks,
         "keychain_available": keychain_available(),
+        "secret_vault": secret_scan,
         "boundaries": [
             "localhost-only",
             "real model API calls require explicit UI action (may cost money)",
@@ -3586,7 +3731,8 @@ def health_check():
             "real LingTai lifecycle signals: confirmation-gated lull/suspend/interrupt/clear/CPR (no filesystem deletion, no nirvana)",
             "real LingTai durable-store index: read-only pad/knowledge/custom skills/shared skills/summaries view",
             "not connected yet: autonomous standalone WeChat poller",
-            "no plaintext API key in JSON/logs/responses (Keychain-only)",
+            "Secret Vault health scan reports plaintext-key risks without returning values",
+            "no plaintext API key in JSON/logs/responses (Keychain-first)",
         ],
     }
 
@@ -3596,7 +3742,7 @@ def health_check():
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LingTaiSimple/0.16"
+    server_version = "LingTaiSimple/0.17"
 
     def log_message(self, fmt, *args):
         # 自定义日志，且脱敏
@@ -3672,6 +3818,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rollback_preview(state))
         if route == "/api/health":
             return self._send_json(health_check())
+        if route == "/api/secret/scan":
+            return self._send_json(secret_vault_health_scan())
         if route == "/api/architecture/status":
             return self._send_json(architecture_acceptance_status())
         if route == "/api/lingtai/agents":
@@ -3913,7 +4061,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  圆酱专属轻量版灵台 / LingTai Simple v0.16 — 本地原型")
+    print("  圆酱专属轻量版灵台 / LingTai Simple v0.17 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.16 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.17 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -85,17 +85,20 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.16', health
+        assert health['version']=='v0.17', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] == have_security, health
+        assert health['checks'].get('secret_vault_scan') is True, health
+        assert health['secret_vault']['summary']['high'] == 0, health
         boundaries=' '.join(health['boundaries'])
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.16' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.17' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
+        assert any(i['id']=='A06' and 'health scan' in i['test'] for i in arch['items']), arch
         mem=req('/api/lingtai/memory')
         assert mem['ok'] and mem['counts']['pad'] >= 2 and mem['counts']['knowledge'] >= 1 and mem['counts']['skills'] >= 2, mem
         scan=req('/api/lingtai/memory/scan', {})
@@ -142,6 +145,18 @@ time.sleep(30)
 
         # ---- 关键安全断言：假 key 绝不出现在 state.json ----
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED INTO state.json!'
+
+        # ---- Secret Vault health scan：只返回位置/字段，不回显值；能发现临时明文风险 ----
+        risk_file = ROOT/'data'/'secret_health_selfcheck.json'
+        risk_value = 'selfcheck-risk-value'
+        risk_file.write_text(json.dumps({'api_key': risk_value}, ensure_ascii=False), encoding='utf-8')
+        secscan=req('/api/secret/scan')
+        assert secscan['summary']['high'] >= 1, secscan
+        assert risk_value not in json.dumps(secscan, ensure_ascii=False), secscan
+        assert any(r.get('field_path') == 'api_key' for r in secscan.get('risks', [])), secscan
+        risk_file.unlink()
+        health2=req('/api/health')
+        assert health2['checks'].get('secret_vault_scan') is True, health2
 
         # ---- 真实模型调用必须显式确认；未确认时拒绝、且不发起网络 ----
         mt=req('/api/model/test', {'provider_id':'openai'})
@@ -233,7 +248,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.16' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.17' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -277,7 +292,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.16 self-check passed')
+        print('OK LingTai Simple v0.17 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)

@@ -1,8 +1,8 @@
-# LingTai Simple v0.16 Implementation Report
+# LingTai Simple v0.17 Implementation Report
 
-## v0.16 Update — real LingTai memory / skill index
+## v0.17 Update — real LingTai memory / skill index
 
-v0.16 adds a read-only durable-store index for the current real LingTai agent. Simple can now show what the agent remembers and what reusable skills it has, without exposing secrets, mailboxes, logs, or arbitrary filesystem paths.
+v0.17 adds a read-only durable-store index for the current real LingTai agent. Simple can now show what the agent remembers and what reusable skills it has, without exposing secrets, mailboxes, logs, or arbitrary filesystem paths.
 
 New endpoints:
 
@@ -25,10 +25,10 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.16 self-check passed`.
+- Expected output: `OK LingTai Simple v0.17 self-check passed`.
 
 
-## v0.16.1 Download-and-run packaging
+## v0.17.1 Download-and-run packaging
 
 Added portable GitHub clone/run support so the project is not tied to the original local absolute path:
 
@@ -93,7 +93,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.16 self-check passed
+OK LingTai Simple v0.17 self-check passed
 ```
 
 ## Boundaries
@@ -113,7 +113,7 @@ OK LingTai Simple v0.16 self-check passed
 - Bound-card delete now routes to `lingtai_avatar_retire`; raw filesystem deletion remains intentionally absent.
 - Self-check validates bind, delete-to-retire routing, approval execution, and confirms the fake real agent directory remains present.
 
-## v0.16 架构验收矩阵
+## v0.17 架构验收矩阵
 
 新增：
 
@@ -121,4 +121,10 @@ OK LingTai Simple v0.16 self-check passed
 - `GET /api/architecture/status`：本地只读 API，返回机器可读验收状态、证据、缺口、测试命令与下一批优先实现项。
 - 前端新增 **📋 架构验收表** 大按钮和 modal。
 
-诚实边界：v0.16 不是宣称所有架构要求已完成，而是把已完成、部分完成、未完成拆开亮出来；下一步优先补 standalone WeChat bridge runner、统一 Task Router、Secret Vault health 扫描和累计预算/成本面板。
+诚实边界：v0.17 不是宣称所有架构要求已完成，而是把已完成、部分完成、未完成拆开亮出来；下一步优先补 standalone WeChat bridge runner、统一 Task Router、Secret Vault health 扫描和累计预算/成本面板。
+
+
+## v0.17 Secret Vault health scan
+- `/api/health` 和 `/api/secret/scan` 现在会结构化扫描 state/example/.env/.secrets JSON 中的高置信明文 key 风险。
+- 扫描结果只返回位置、字段、严重级别和迁移建议；不会回显任何疑似 key/token 值。
+- `scripts/self_check.py` 会创建临时风险文件验证可检测性，再删除并确认健康检查恢复 OK。

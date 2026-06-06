@@ -1,4 +1,4 @@
-# LingTai Simple 架构验收矩阵（v0.16）
+# LingTai Simple 架构验收矩阵（v0.17）
 
 > 原则：**未真实跑通，不写已完成。** 这张表把 `../ARCHITECTURE_EXPERT_DISCUSSION.md` 与圆酱“任何人可从 GitHub 下载运行”的要求逐项拆成验收状态、证据、缺口和测试命令。
 
@@ -18,7 +18,7 @@
 | A06 | Secret Vault | Partial | Mac Keychain 通过 Security.framework/ctypes；state/API/log 不回显 key；self-check 假 key 验证不落盘。 | 尚无受限 `.secrets`/env fallback；启动明文 key 风险扫描未结构化进 health。 | `python3 scripts/self_check.py`；提交前高置信 secret scan。 |
 | A07 | Approval Queue | Partial | rollback、delete_agent、sensitive task、Claude L3/L4/L5、LingTai lifecycle/avatar、PR/merge 等进确认队列；UI 显示预览。 | 尚无 allow-once/allow-for-task；日志/截图/报告外发确认未单独做；部分模型调用用 checkbox 而不是队列项。 | `python3 scripts/self_check.py`；隔离 rollback/commit smoke。 |
 | A08 | Worker / Sub-agent Pool | Partial | UI 使用普通说法；真实 shallow avatar spawn/bind/retire；Claude Code L1-L5 权限分级与确认闸。 | daemon/Codex worker 尚未从 Simple UI/API 发起；长期助手技能/模型权限未全量写入真实 agent 配置。 | self-check；Claude Code 真实任务需本机 CLI 和显式确认。 |
-| A09 | Memory / Skills / Knowledge / Molt | Done | v0.16 起只读索引真实 pad/knowledge/custom skills/shared skills/summaries；`/api/shougong` 生成阶段成果、未竟事项、下一步、路径与风险。 | 目前只读；写回 knowledge/skills/molt 仍交给真实 LingTai agent 流程。 | `python3 scripts/self_check.py` 覆盖 fake durable stores 和 secrets 拒读。 |
+| A09 | Memory / Skills / Knowledge / Molt | Done | v0.17 起只读索引真实 pad/knowledge/custom skills/shared skills/summaries；`/api/shougong` 生成阶段成果、未竟事项、下一步、路径与风险。 | 目前只读；写回 knowledge/skills/molt 仍交给真实 LingTai agent 流程。 | `python3 scripts/self_check.py` 覆盖 fake durable stores 和 secrets 拒读。 |
 | A10 | Rollback / Time Machine | Done | `/api/rollback/snapshot`、preview、request；批准后真实 `git reset --hard`，先写 safety ref；UI/README 标明外部副作用不可回滚。 | 只覆盖本仓库 tracked/unignored 文件。 | self-check + 隔离 `/tmp` destructive rollback smoke。 |
 | A11 | GitHub downloadable/runnable | Done | `run.sh`、`QUICKSTART.md`、README clone/ZIP 运行；ZIP-like 无 `.git` 也能启动核心 UI。 | 高级能力仍需本机工具/配置；Quickstart 已说明。 | `rsync --exclude .git` 到 `/tmp` 后 `./run.sh`，`/api/health` ok。 |
 
