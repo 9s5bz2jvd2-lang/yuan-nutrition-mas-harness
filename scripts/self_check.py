@@ -7,7 +7,7 @@
 - 默认用 LINGTAI_SIMPLE_DISABLE_KEYCHAIN=1 强制走 env/.secrets fallback，避免污染真实 Keychain。
 - 所有假 key 都必须验证不落到 state.json / health / scan 响应。
 """
-import json, os, pathlib, shutil, subprocess, sys, time, tempfile, urllib.request, urllib.error
+import json, os, pathlib, re, shutil, subprocess, sys, time, tempfile, urllib.request, urllib.error
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PORT = int(os.environ.get('LINGTAI_SIMPLE_TEST_PORT', '8799'))
 BASE = f'http://127.0.0.1:{PORT}'
@@ -16,6 +16,7 @@ KC_SERVICE = 'lingtai-simple-selfcheck'
 FAKE_KEY = 'FAKE_SELF_CHECK_KEY_NOT_REAL_0000'
 FAKE_ENV_KEY = 'FAKE_ENV_SELF_CHECK_KEY_NOT_REAL_1111'
 FAKE_FALLBACK_KEY = 'FAKE_FALLBACK_SELF_CHECK_KEY_NOT_REAL_2222'
+SECRET_VALUE_RE = re.compile(r'(sk-[A-Za-z0-9_\-]{12,}|Bearer\s+[A-Za-z0-9_\-\.]{12,}|ghp_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]+)')
 
 def req(path, payload=None):
     data = None if payload is None else json.dumps(payload).encode('utf-8')
@@ -97,6 +98,20 @@ time.sleep(30)
         boundaries=' '.join(health['boundaries'])
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
+        standalone=req('/api/standalone/status')
+        assert standalone['ok'] and standalone['core_runtime']['ok'] is True, standalone
+        assert standalone['core_startup']['ok'] is True and standalone['core_startup']['server']=='running', standalone
+        assert standalone['core_startup']['requires_full_lingtai'] is False, standalone
+        assert standalone.get('missing_core') == [], standalone
+        assert standalone['optional_bridge']['requires_full_lingtai'] is False, standalone
+        assert standalone['optional_bridge']['required_for_core_startup'] is False, standalone
+        assert standalone['standalone_capabilities']['local_gui_task_queue']['available'] is True, standalone
+        assert standalone['standalone_capabilities']['approvals']['available'] is True, standalone
+        assert standalone['standalone_capabilities']['harness_run_state']['available'] is True, standalone
+        assert standalone['standalone_capabilities']['cost_guardrails']['available'] is True, standalone
+        standalone_text=json.dumps(standalone, ensure_ascii=False)
+        assert FAKE_KEY not in standalone_text and FAKE_ENV_KEY not in standalone_text and FAKE_FALLBACK_KEY not in standalone_text, standalone
+        assert not SECRET_VALUE_RE.search(standalone_text), standalone
         arch=req('/api/architecture/status')
         assert arch['ok'] and arch['version']=='v0.24' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch

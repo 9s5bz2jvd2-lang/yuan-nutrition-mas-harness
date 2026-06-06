@@ -1,20 +1,28 @@
 # Yuan Nutrition MAS Harness v0.24
 
-**Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan on top of [LingTai](https://github.com/Lingtai-AI/lingtai). It is designed to make lightweight agent orchestration, API management, safety approvals, rollback, and structured task handoff easier for nutrition professionals and nutrition-AI workflows.
+**Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan, inspired by [LingTai](https://github.com/Lingtai-AI/lingtai) and able to bridge to it when configured. The lightweight harness core is standalone: after clone/download it runs with Python stdlib plus the included vanilla HTML/CSS/JS UI. You do **not** need to install full LingTai to start the local app, task queue, approval gates, harness run state, budget guardrails, docs, or self-check.
 
-This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Every worker launch is approval-gated: Codex/Claude run as local read-only CLI subprocesses with redacted reports, daemon requests are written to the real LingTai controller mailbox, and avatar launches create same-network shallow agents. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
+This is not a shell or a button-only GUI. It is a runnable **lightweight harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the optional LingTai bridge entry points, read-only memory/skill indexes when a LingTai agent directory is configured, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Full LingTai capabilities are optional enhancements: daemon requests can be written to a configured LingTai controller mailbox, replies can be collected from a configured inbox, and avatar/daemon bridge features require a real LingTai network. Codex/Claude are also optional local CLI workers. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
+
+Standalone proof endpoint:
+
+```bash
+curl http://127.0.0.1:8765/api/standalone/status
+```
+
+It reports core runtime status, local standalone capabilities, optional bridge capabilities, `missing_core`, and recommended actions. Missing git, Codex, Claude, or LingTai are reported as unavailable optional features rather than core startup failures.
 
 
 ## v0.24: GUI Worker Launcher
 
-The GUI can now create real worker-launch requests for four worker bodies, all behind the approval queue:
+The GUI can create optional worker-launch requests for four worker bodies, all behind the approval queue:
 
-- **daemon**: writes a real LingTai controller-mailbox dispatch; the controller agent is responsible for using the daemon tool and returning `HARNESS_REPLY_JSON`.
-- **Codex**: starts local `codex exec --sandbox read-only` and writes a redacted Markdown report under `data/worker_launches/`.
-- **Claude**: starts local `claude --print --permission-mode plan` with only `Read,Grep,Glob` allowed and `Bash/Edit/Write` disallowed.
-- **avatar**: creates a real same-network shallow avatar and starts `lingtai-agent run` after approval.
+- **daemon**: optional LingTai bridge worker; writes a real LingTai controller-mailbox dispatch when `LINGTAI_SIMPLE_NETWORK_DIR` is configured. The controller agent is responsible for using the daemon tool and returning `HARNESS_REPLY_JSON`.
+- **Codex**: optional local CLI worker; starts local `codex exec --sandbox read-only` and writes a redacted Markdown report under `data/worker_launches/` if the CLI is installed.
+- **Claude**: optional local CLI worker; starts local `claude --print --permission-mode plan` with only `Read,Grep,Glob` allowed and `Bash/Edit/Write` disallowed if the CLI is installed.
+- **avatar**: optional LingTai bridge worker; creates a real same-network shallow avatar and starts `lingtai-agent run` after approval when a LingTai network and agent command are configured.
 
-Honest boundary: this is still local-first and approval-gated. Codex/Claude may incur model cost; avatar creates local `.lingtai` agent files; daemon is not executed directly by the web process but by the real LingTai controller workflow.
+Honest boundary: the app core is local-first, standalone, and approval-gated. Codex/Claude may incur model cost when used; avatar creates local `.lingtai` agent files when the optional bridge is configured; daemon is not executed directly by the web process but by the real LingTai controller workflow.
 
 ## Open source status
 

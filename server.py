@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import ctypes
 import ctypes.util
@@ -1928,31 +1929,45 @@ def worker_request_apply_real(state, ap):
 def worker_launcher_status(state=None):
     """Read-only status for GUI real worker launcher."""
     state = state or {}
+    network_available = _lingtai_network_path() is not None
+    agent_cmd_available = os.path.exists(LINGTAI_AGENT_CMD)
     return {
         "ok": True,
         "version": "v0.24-worker-launcher",
+        "core_startup": {
+            "requires_full_lingtai": False,
+            "note": "The lightweight harness core runs standalone; daemon/avatar are optional LingTai bridge workers.",
+        },
         "launchers": {
             "daemon": {
-                "available": _lingtai_network_path() is not None,
-                "mode": "approval -> real LingTai controller mailbox -> daemon tool",
-                "safety": "No second WeChat poller; controller must return HARNESS_REPLY_JSON.",
+                "available": network_available,
+                "optional_bridge": True,
+                "requires_lingtai_bridge": True,
+                "mode": "optional bridge: approval -> LingTai controller mailbox -> daemon tool",
+                "safety": "Not required for core startup; no second WeChat poller; controller must return HARNESS_REPLY_JSON.",
             },
             "codex": {
                 "available": shutil.which("codex") is not None,
                 "path": shutil.which("codex") or "",
+                "optional_bridge": False,
+                "optional_local_cli": True,
                 "mode": "local subprocess: codex exec --sandbox read-only",
-                "safety": "Read-only sandbox by default; stdout/stderr are redacted and written to data/worker_launches.",
+                "safety": "Optional local CLI worker, not required for core startup; stdout/stderr are redacted and written to data/worker_launches.",
             },
             "claude": {
                 "available": shutil.which("claude") is not None,
                 "path": shutil.which("claude") or "",
+                "optional_bridge": False,
+                "optional_local_cli": True,
                 "mode": "local subprocess: claude --print --permission-mode plan",
-                "safety": "Read/Grep/Glob only; Bash/Edit/Write are disallowed.",
+                "safety": "Optional local CLI worker, not required for core startup; Read/Grep/Glob only; Bash/Edit/Write are disallowed.",
             },
             "avatar": {
-                "available": _lingtai_network_path() is not None and os.path.exists(LINGTAI_AGENT_CMD),
-                "mode": "approval -> create same-network shallow avatar -> lingtai-agent run",
-                "safety": "Requires a real mission and a unique safe avatar name.",
+                "available": network_available and agent_cmd_available,
+                "optional_bridge": True,
+                "requires_lingtai_bridge": True,
+                "mode": "optional bridge: approval -> create same-network shallow avatar -> lingtai-agent run",
+                "safety": "Not required for core startup; requires a real mission and a unique safe avatar name.",
             },
         },
         "recent_launches": (state or {}).get("worker_launches", [])[:20],
@@ -5842,6 +5857,199 @@ def health_check():
     }
 
 
+def _path_presence(path):
+    p = Path(path)
+    return {
+        "path": str(p),
+        "exists": p.exists(),
+        "is_dir": p.is_dir(),
+        "is_file": p.is_file(),
+    }
+
+
+def _optional_tool_status(name, command):
+    try:
+        path = shutil.which(command)
+        return {
+            "name": name,
+            "available": path is not None,
+            "path": path or "",
+            "required_for_core_startup": False,
+        }
+    except Exception as exc:
+        return {
+            "name": name,
+            "available": False,
+            "path": "",
+            "required_for_core_startup": False,
+            "error": redact(str(exc))[:160],
+        }
+
+
+def standalone_status():
+    """Read-only proof that the lightweight harness core can run without full LingTai."""
+    core_paths = {
+        "base_dir": _path_presence(BASE_DIR),
+        "data_dir": _path_presence(DATA_DIR),
+        "state_path": _path_presence(STATE_PATH),
+        "static_index": _path_presence(os.path.join(STATIC_DIR, "index.html")),
+        "static_app": _path_presence(os.path.join(STATIC_DIR, "app.js")),
+        "static_styles": _path_presence(os.path.join(STATIC_DIR, "styles.css")),
+        "readme": _path_presence(os.path.join(BASE_DIR, "README.md")),
+        "quickstart": _path_presence(os.path.join(BASE_DIR, "QUICKSTART.md")),
+        "self_check": _path_presence(os.path.join(BASE_DIR, "scripts", "self_check.py")),
+    }
+    required_core = {
+        "base_dir": core_paths["base_dir"]["is_dir"],
+        "data_dir": core_paths["data_dir"]["is_dir"],
+        "static_index": core_paths["static_index"]["is_file"],
+        "static_app": core_paths["static_app"]["is_file"],
+        "static_styles": core_paths["static_styles"]["is_file"],
+        "self_check": core_paths["self_check"]["is_file"],
+    }
+    missing_core = [name for name, ok in required_core.items() if not ok]
+
+    try:
+        git_repo = _git_available()
+    except Exception:
+        git_repo = False
+    try:
+        network_path = _lingtai_network_path()
+    except Exception:
+        network_path = None
+
+    local_capabilities = {
+        "local_gui_task_queue": {
+            "available": True,
+            "required_for_core_startup": True,
+            "evidence": "GET /, /api/state, local tasks, router runs, and approvals are served by server.py.",
+        },
+        "approvals": {
+            "available": True,
+            "required_for_core_startup": True,
+            "safety": "Sensitive actions remain approval-gated.",
+        },
+        "harness_run_state": {
+            "available": True,
+            "required_for_core_startup": True,
+            "endpoint": "/api/harness/status",
+        },
+        "cost_guardrails": {
+            "available": True,
+            "required_for_core_startup": True,
+            "endpoint": "/api/cost/status",
+            "note": "Local estimates only; no provider billing lookup.",
+        },
+        "git_time_machine": {
+            "available": bool(git_repo),
+            "required_for_core_startup": False,
+            "optional": True,
+            "note": "Available only in a git checkout with git installed; ZIP downloads still run the core UI.",
+        },
+        "codex_cli_worker": _optional_tool_status("Codex local CLI worker", "codex"),
+        "claude_cli_worker": _optional_tool_status("Claude local CLI worker", "claude"),
+    }
+    local_capabilities["codex_cli_worker"]["optional"] = True
+    local_capabilities["claude_cli_worker"]["optional"] = True
+    local_capabilities["codex_cli_worker"]["note"] = "Optional local read-only CLI worker; missing CLI is not a core blocker."
+    local_capabilities["claude_cli_worker"]["note"] = "Optional local read-only CLI worker; missing CLI is not a core blocker."
+
+    optional_bridge = {
+        "requires_full_lingtai": False,
+        "required_for_core_startup": False,
+        "note": "Full LingTai is an optional bridge/enhancement. The lightweight harness core does not require installing LingTai.",
+        "lingtai_network": {
+            "available": network_path is not None,
+            "path": str(network_path) if network_path else "",
+            "source": "LINGTAI_SIMPLE_NETWORK_DIR or parent .lingtai discovery" if network_path else "not_configured_or_not_found",
+            "required_for_core_startup": False,
+        },
+        "controller_mailbox_dispatch": {
+            "available": network_path is not None,
+            "required_for_core_startup": False,
+            "optional": True,
+            "safety": "Approval-gated; never automatic from this status endpoint.",
+        },
+        "reply_collection": {
+            "available": network_path is not None,
+            "required_for_core_startup": False,
+            "optional": True,
+            "safety": "Read-only inbox scan when explicitly requested elsewhere.",
+        },
+        "avatar_daemon_bridge": {
+            "available": network_path is not None and os.path.exists(LINGTAI_AGENT_CMD),
+            "required_for_core_startup": False,
+            "optional": True,
+            "agent_cmd_configured": bool(LINGTAI_AGENT_CMD),
+            "agent_cmd_available": os.path.exists(LINGTAI_AGENT_CMD),
+        },
+    }
+
+    recommended_actions = []
+    if missing_core:
+        recommended_actions.extend([
+            {
+                "kind": "core_blocker",
+                "message": f"Restore missing core file/path: {name}.",
+            }
+            for name in missing_core
+        ])
+    else:
+        recommended_actions.append({
+            "kind": "core_ok",
+            "message": "No core blockers detected. Run `python3 server.py` and open http://127.0.0.1:8765/.",
+        })
+    if not local_capabilities["git_time_machine"]["available"]:
+        recommended_actions.append({
+            "kind": "optional_setup",
+            "message": "Use a git checkout with git installed to enable local Time Machine snapshots; not needed for core startup.",
+        })
+    if not optional_bridge["lingtai_network"]["available"]:
+        recommended_actions.append({
+            "kind": "optional_bridge_setup",
+            "message": "Set LINGTAI_SIMPLE_NETWORK_DIR only if you want LingTai mailbox/avatar bridge features; not needed for standalone core.",
+        })
+    if not local_capabilities["codex_cli_worker"]["available"]:
+        recommended_actions.append({
+            "kind": "optional_cli_setup",
+            "message": "Install/configure `codex` only if you want optional local Codex CLI workers.",
+        })
+    if not local_capabilities["claude_cli_worker"]["available"]:
+        recommended_actions.append({
+            "kind": "optional_cli_setup",
+            "message": "Install/configure `claude` only if you want optional local Claude CLI workers.",
+        })
+
+    return {
+        "ok": not missing_core,
+        "version": "v0.24-standalone",
+        "core_startup": {
+            "ok": not missing_core,
+            "server": "running",
+            "requires_full_lingtai": False,
+            "statement": "Standalone lightweight core works after clone/download with Python stdlib; LingTai bridge is optional.",
+        },
+        "core_runtime": {
+            "ok": not missing_core,
+            "server": "running",
+            "python_version": ".".join(str(x) for x in sys.version_info[:3]),
+            "base_dir": BASE_DIR,
+            "host": HOST,
+            "port": PORT,
+            "paths": core_paths,
+        },
+        "standalone_capabilities": local_capabilities,
+        "optional_bridge": optional_bridge,
+        "missing_core": missing_core,
+        "recommended_actions": recommended_actions,
+        "safety": {
+            "read_only": True,
+            "automatic_external_side_effects": False,
+            "secret_values_returned": False,
+        },
+    }
+
+
 # --------------------------------------------------------------------------
 # HTTP Handler
 # --------------------------------------------------------------------------
@@ -5941,6 +6149,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rollback_preview(state))
         if route == "/api/health":
             return self._send_json(health_check())
+        if route == "/api/standalone/status":
+            return self._send_json(standalone_status())
         if route == "/api/secret/scan":
             return self._send_json(secret_vault_health_scan())
         if route == "/api/architecture/status":

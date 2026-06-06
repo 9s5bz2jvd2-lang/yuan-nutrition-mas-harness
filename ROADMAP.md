@@ -1,6 +1,6 @@
 # Roadmap
 
-Yuan Nutrition MAS Harness is an early, runnable lightweight LingTai-based MAS harness. The roadmap below keeps the project honest: it separates what already works from what should be hardened next.
+Yuan Nutrition MAS Harness is an early, runnable lightweight MAS harness inspired by LingTai, with an optional LingTai bridge. The core app runs standalone after clone/download with Python stdlib; the roadmap below keeps the project honest by separating what already works from optional bridge/tool hardening.
 
 ## Current baseline: v0.23
 

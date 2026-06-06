@@ -33,6 +33,7 @@
       <button class="btn primary" data-act="load-demo">加载示例状态</button>
       <button class="btn" data-act="health">健康检查</button>
       <button class="btn" data-act="architecture">架构验收表</button>
+      <button class="btn" data-act="standalone">自运行状态</button>
       <button class="btn" data-act="harness">Harness 状态</button>
       <button class="btn" data-act="worker-launcher">Worker 启动器</button>
       <button class="btn" data-act="cost">预算/成本面板</button>
@@ -87,6 +88,14 @@
   </section>
 
   <main class="grid">
+    <!-- Standalone core status -->
+    <section class="card">
+      <h2>自运行状态 / Standalone Mode</h2>
+      <p class="hint">轻量版 core 可独立运行；LingTai controller mailbox、reply collection、avatar/daemon 属于可选桥接增强，不是启动前置条件。</p>
+      <button class="btn" data-act="standalone">查看自运行状态</button>
+      <div id="standalone-panel" class="list"></div>
+    </section>
+
     <!-- 灵状态卡 -->
     <section class="card">
       <h2>🧩 我的灵（agent 状态卡）</h2>

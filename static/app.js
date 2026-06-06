@@ -125,6 +125,7 @@ function render() {
   $("#stat-approvals").textContent = `待确认 ${s.pending_approvals || 0}`;
 
   renderAgents();
+  renderStandalone();
   renderTasks();
   renderWechat();
   renderHarness();
@@ -141,6 +142,15 @@ function render() {
   renderSoulFlows();
   renderPressure();
   renderLog();
+}
+
+function renderStandalone() {
+  const el = $("#standalone-panel");
+  if (!el) return;
+  el.innerHTML = `
+    <div class="preview">Core can run / 核心可运行：本地 GUI、任务队列、确认队列、harness_run 状态、预算/成本闸都属于轻量版 core。LingTai bridge、Codex/Claude CLI、git Time Machine 是可选增强。</div>
+    <div class="row-actions"><button class="btn small" onclick="openStandaloneModal()">刷新自运行状态</button></div>
+  `;
 }
 
 function renderAgents() {
@@ -251,7 +261,7 @@ function renderWorkerLauncher() {
   const launches = STATE.worker_launches || [];
   const launcherRows = ["daemon", "codex", "claude", "avatar"].map(k => {
     const l = launchers[k] || {};
-    const label = { daemon: "daemon 分神", codex: "Codex CLI", claude: "Claude CLI", avatar: "真实 avatar" }[k] || k;
+    const label = { daemon: "daemon 分神（可选 LingTai bridge）", codex: "Codex CLI（可选本机 worker）", claude: "Claude CLI（可选本机 worker）", avatar: "avatar（可选 LingTai bridge）" }[k] || k;
     return `<div class="mini-row"><b>${esc(label)}</b> ${statusTag(l.available ? "可用" : "不可用")}<br><span class="muted">${esc(l.mode || "")}${l.path ? " · " + esc(l.path) : ""}</span><br><span class="muted">${esc(l.safety || "")}</span></div>`;
   }).join("");
   const rows = launches.length ? launches.slice(0, 8).map(w => `
@@ -265,7 +275,7 @@ function renderWorkerLauncher() {
         ${w.error ? "<br>错误：" + esc(w.error) : ""}
       </div>
     </div>`).join("") : `<div class="empty">还没有 GUI 真实 worker 启动记录。点击“启动 worker”后会先进入确认队列。</div>`;
-  el.innerHTML = `<div class="preview">v0.24：GUI 可以创建真实 worker 启动请求；所有请求先入确认队列。Codex/Claude 以本机只读子进程运行并写报告；daemon 走真实 LingTai controller 邮箱；avatar 创建同网 shallow agent。</div>
+  el.innerHTML = `<div class="preview">v0.24：GUI 可以创建可选 worker 启动请求；所有请求先入确认队列。Codex/Claude 是可选本机只读 CLI worker；daemon/avatar 需要可选 LingTai bridge。轻量版 core 本身不依赖这些 worker。</div>
     <div class="row-actions">
       <button class="btn small ok" onclick="openWorkerLauncherModal()">启动 worker</button>
       <button class="btn small" onclick="refreshWorkerLauncherStatus()">刷新可用性</button>
@@ -1306,13 +1316,13 @@ async function openWorkerLauncherModal() {
   const launchers = data.launchers || {};
   const opts = ["daemon", "codex", "claude", "avatar"].map(k => {
     const l = launchers[k] || {};
-    const label = { daemon: "daemon（交给真实 controller 调 daemon 工具）", codex: "Codex CLI（只读 sandbox）", claude: "Claude CLI（plan / Read,Grep,Glob）", avatar: "avatar（创建同网 shallow agent）" }[k] || k;
+    const label = { daemon: "daemon（可选 LingTai bridge / controller mailbox）", codex: "Codex CLI（可选本机只读 sandbox）", claude: "Claude CLI（可选本机 plan / Read,Grep,Glob）", avatar: "avatar（可选 LingTai bridge / shallow agent）" }[k] || k;
     return `<option value="${k}" ${l.available ? "" : "disabled"}>${esc(label)}${l.available ? "" : "（当前不可用）"}</option>`;
   }).join("");
   const statusRows = Object.entries(launchers).map(([k, l]) => `
     <div class="mini-row"><b>${esc(k)}</b> ${statusTag(l.available ? "可用" : "不可用")}<br><span class="muted">${esc(l.mode || "")}</span><br><span class="muted">${esc(l.safety || "")}</span></div>`).join("");
-  openModal("🚀 真实 Worker 启动器", `
-    <div class="preview">所有 worker 启动都会先进入确认队列；不会绕过 approval。任务描述疑似包含 token/API key 会被拒绝。Codex/Claude 可能产生模型费用；daemon/avatar 会占用真实 LingTai 资源。</div>
+  openModal("🚀 Worker 启动器", `
+    <div class="preview">这些都是可选 worker，不是轻量版 core 的启动依赖。所有 worker 启动都会先进入确认队列；不会绕过 approval。任务描述疑似包含 token/API key 会被拒绝。Codex/Claude 可能产生模型费用；daemon/avatar 需要可选 LingTai bridge 并会占用真实 LingTai 资源。</div>
     ${statusRows}
     <label>Worker 类型</label>
     <select id="wl-kind" onchange="onWorkerKindChange()">${opts}</select>
@@ -1357,6 +1367,64 @@ async function submitWorkerLaunch() {
     toast(r.error || "创建 worker 启动请求失败");
     render();
   }
+}
+
+function standaloneChip(label, available) {
+  return `<span class="tag ${available ? "done" : "paused"}">${esc(label)}：${available ? "available" : "unavailable"}</span>`;
+}
+
+function standaloneRows(items) {
+  return Object.entries(items || {}).map(([k, v]) => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">${esc(k)}</span>${statusTag(v.available ? "可用" : "不可用")}</div>
+      <div class="row-desc">${esc(v.note || v.safety || v.mode || "")}</div>
+      ${v.path ? `<div class="row-desc muted">${esc(v.path)}</div>` : ""}
+    </div>`).join("");
+}
+
+async function openStandaloneModal() {
+  const res = await fetch("/api/standalone/status");
+  const s = await res.json();
+  const core = s.core_startup || {};
+  const runtime = s.core_runtime || {};
+  const caps = s.standalone_capabilities || {};
+  const bridge = s.optional_bridge || {};
+  const blockers = s.missing_core || [];
+  const paths = runtime.paths || {};
+  const pathRows = ["base_dir", "data_dir", "state_path", "static_index", "static_app", "self_check"].map(k => {
+    const p = paths[k] || {};
+    return `<div class="mini-row"><b>${esc(k)}</b> ${statusTag(p.exists ? "可用" : "不可用")}<br><span class="muted">${esc(p.path || "")}</span></div>`;
+  }).join("");
+  const bridgeCaps = {
+    lingtai_network: bridge.lingtai_network || {},
+    controller_mailbox_dispatch: bridge.controller_mailbox_dispatch || {},
+    reply_collection: bridge.reply_collection || {},
+    avatar_daemon_bridge: bridge.avatar_daemon_bridge || {},
+  };
+  const actions = (s.recommended_actions || []).map(a => `<li>${esc(a.kind || "")}: ${esc(a.message || "")}</li>`).join("");
+  openModal("Standalone Mode / 自运行状态", `
+    <div class="preview">
+      Core can run / 核心可运行：${core.ok ? "YES" : "NO"}<br>
+      ${esc(core.statement || "")}<br>
+      Python ${esc(runtime.python_version || "")} · server=${esc(core.server || "")}
+    </div>
+    <div class="cap-tags">
+      ${standaloneChip("core", !!core.ok)}
+      ${standaloneChip("LingTai bridge optional", !(bridge.required_for_core_startup))}
+      ${standaloneChip("no full LingTai required for core", bridge.requires_full_lingtai === false)}
+    </div>
+    <h3 class="sub">Core blockers</h3>
+    ${blockers.length ? `<div class="preview danger">${blockers.map(esc).join("<br>")}</div>` : `<div class="preview">None / 无。missing_core is empty.</div>`}
+    <h3 class="sub">Core paths</h3>
+    ${pathRows}
+    <h3 class="sub">Standalone capabilities</h3>
+    ${standaloneRows(caps)}
+    <h3 class="sub">Optional LingTai bridge</h3>
+    <div class="preview">${esc(bridge.note || "")}</div>
+    ${standaloneRows(bridgeCaps)}
+    <h3 class="sub">Recommended actions</h3>
+    <ol>${actions}</ol>
+  `);
 }
 
 async function openArchitectureModal() {
@@ -1410,6 +1478,7 @@ const ACTIONS = {
   "rollback": openRollbackModal,
   "load-demo": loadDemoState,
   "health": openHealthModal,
+  "standalone": openStandaloneModal,
   "architecture": openArchitectureModal,
   "open-docs": openDocsModal,
 };

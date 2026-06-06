@@ -1,5 +1,15 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — Standalone core status
+
+Added `GET /api/standalone/status` as a read-only proof that the cloned lightweight harness can run by itself. It reports core runtime status (`server=running`, Python version, `base_dir`, data/state/static/docs/self-check path presence), standalone capabilities that do not require full LingTai (local GUI/task queue, approvals, `harness_run` state, cost guardrails, git Time Machine when the folder is a git repo, optional Codex/Claude CLI availability), and optional bridge capabilities (LingTai network path if configured/found, controller mailbox dispatch, reply collection, avatar/daemon bridge).
+
+Boundary retained: missing git, LingTai, Codex, or Claude never fails the endpoint. `missing_core` is reserved for actual core blockers and should be empty in this repo. Full LingTai is documented and reported as an optional bridge/enhancement, not a required install for core startup. The endpoint has no automatic external side effects and returns only presence/path/source labels, not secret values.
+
+The GUI now has a small "Standalone Mode / 自运行状态" card and modal that fetches `/api/standalone/status`, shows "Core can run / optional bridge not required", displays core blockers when present, and renders available/unavailable chips for standalone and optional bridge capabilities without redesigning the page.
+
+Self-check now asserts `/api/standalone/status` exists, core startup is OK, `missing_core` is empty, `optional_bridge.requires_full_lingtai` is false for core startup, required local capabilities are available, and the response does not leak fake secret values or high-confidence token patterns.
+
 ## v0.24 follow-up — Minimal harness GUI affordance
 
 The existing Harness Run Protocol modal now surfaces `side_effect_reviews[]`, review counts, and `awaiting_side_effect_review` / `pending` / `approved_for_bridge` / `denied` statuses from `GET /api/harness/status`. Each run gets small operator controls only: read-only collect, approval-gated retry creation for attention-needed runs, and local-only manual resolution/update. The GUI preserves the backend safety boundaries: collect only scans existing replies, retry only creates an approval gate, and resolve only updates local audit state without sending WeChat, dispatching mail, approving actions, or calling external tools.
