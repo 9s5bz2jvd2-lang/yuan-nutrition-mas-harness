@@ -123,3 +123,12 @@ Requires local tools or credentials:
 - 自检/受限环境可设 `LINGTAI_SIMPLE_DISABLE_KEYCHAIN=1` 强制不使用 Keychain。
 
 无论哪种方式，API 响应、state、health scan 都不回显 key 明文。
+
+
+## 8. License and roadmap
+
+Yuan Nutrition MAS Harness is released under the [MIT License](LICENSE).
+
+For public-source safety notes, read [SECURITY.md](SECURITY.md). For next development steps, read [ROADMAP.md](ROADMAP.md).
+
+Before sharing logs, screenshots, state files, or bug reports, scan and redact secrets. Before using nutrition or medical content with real users, keep human professional review in the loop.

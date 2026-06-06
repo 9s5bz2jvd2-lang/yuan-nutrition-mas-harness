@@ -4,6 +4,15 @@
 
 This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.23 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, and scoped approval grants. It adds the **Harness Run Protocol**: every input records route, approval, dispatch, worker_request, structured_result, and return-channel state; controller/worker replies must include `HARNESS_REPLY_JSON` so summary, artifacts, next_action, and external_side_effects can be collected automatically.
 
+## Open source status
+
+- **Repository**: public source repository at <https://github.com/9s5bz2jvd2-lang/yuan-nutrition-mas-harness>
+- **License**: [MIT](LICENSE), Copyright (c) 2026 Wang Runyuan
+- **Security and safety policy**: see [SECURITY.md](SECURITY.md)
+- **Roadmap**: see [ROADMAP.md](ROADMAP.md)
+
+This project is local-first. Do not expose the local server directly to the public internet, do not commit real credentials, and keep high-impact actions confirmation-gated. For nutrition/medical content, the harness supports workflow and evidence review; it does not replace professional judgment, diagnosis, or treatment.
+
 ## v0.23：Lightweight LingTai Harness（不是壳）
 
 本地可查 harness 状态：
