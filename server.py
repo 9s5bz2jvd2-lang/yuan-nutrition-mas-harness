@@ -2154,6 +2154,28 @@ def worker_launch_apply_real(state, ap):
     return {"launch_id": launch_id, "status": "queued_subprocess", "note": "子进程已在后台启动；刷新 GUI 查看 report_path / output_preview。"}, None
 
 
+def _redact_jsonish(value, *, max_items=20, max_text=500):
+    if isinstance(value, str):
+        return redact(value)[:max_text]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_redact_jsonish(v, max_items=max_items, max_text=max_text) for v in value[:max_items]]
+    if isinstance(value, dict):
+        out = {}
+        for k, v in list(value.items())[:max_items]:
+            key = redact(str(k))[:120]
+            out[key] = _redact_jsonish(v, max_items=max_items, max_text=max_text)
+        return out
+    return redact(str(value))[:max_text]
+
+
+def _structured_list(value, *, max_items=20, max_text=500):
+    if not isinstance(value, list):
+        return []
+    return [_redact_jsonish(v, max_items=max_items, max_text=max_text) for v in value[:max_items]]
+
+
 def _parse_harness_reply(message):
     text = message or ""
     data = None
@@ -2184,14 +2206,17 @@ def _parse_harness_reply(message):
         "blocked": "stuck",
         "error": "failed",
     }.get(status, status or "unknown")
+    artifacts = _structured_list(data.get("artifacts"), max_items=20, max_text=800)
+    external_side_effects = _structured_list(data.get("external_side_effects"), max_items=20, max_text=800)
     return {
         "worker_request_id": str(data.get("worker_request_id") or ""),
         "harness_run_id": str(data.get("harness_run_id") or ""),
         "status": normalized,
         "summary": redact(str(data.get("summary") or ""))[:2000],
-        "artifacts": data.get("artifacts") if isinstance(data.get("artifacts"), list) else [],
+        "artifacts": artifacts,
         "next_action": redact(str(data.get("next_action") or ""))[:1000],
-        "external_side_effects": data.get("external_side_effects") if isinstance(data.get("external_side_effects"), list) else [],
+        "external_side_effects": external_side_effects,
+        "has_external_side_effects": bool(external_side_effects),
     }
 
 
@@ -2237,6 +2262,10 @@ def collect_lingtai_mail_results(state, payload=None):
             "worker_kind": dispatch.get("worker_kind"),
             "harness_run_id": dispatch.get("harness_run_id") or (structured or {}).get("harness_run_id"),
             "structured_result": structured,
+            "structured_status": (structured or {}).get("status"),
+            "next_action": (structured or {}).get("next_action"),
+            "artifacts": (structured or {}).get("artifacts") or [],
+            "external_side_effects": (structured or {}).get("external_side_effects") or [],
         }
         state["lingtai_mail_results"].insert(0, rec)
         state["lingtai_mail_results"] = state["lingtai_mail_results"][:120]
@@ -2251,6 +2280,9 @@ def collect_lingtai_mail_results(state, payload=None):
                 wr["reply_result_id"] = rec["id"]
                 wr["reply_preview"] = preview[:500]
                 wr["structured_result"] = structured
+                wr["next_action"] = (structured or {}).get("next_action") or ""
+                wr["artifacts"] = (structured or {}).get("artifacts") or []
+                wr["external_side_effects"] = (structured or {}).get("external_side_effects") or []
                 wr["completed_at"] = rec["collected_at"]
                 wr.setdefault("steps", []).append("controller_reply_collected")
                 h_id = wr.get("harness_run_id") or (structured or {}).get("harness_run_id")
@@ -2259,16 +2291,31 @@ def collect_lingtai_mail_results(state, payload=None):
                     run["status"] = {"completed": "completed", "needs_human": "needs_human", "stuck": "stuck", "failed": "failed"}.get(parsed_status, "collected")
                     run["reply_result_id"] = rec["id"]
                     run["structured_result"] = structured
+                    run["worker_summary"] = (structured or {}).get("summary") or preview[:500]
+                    run["next_action"] = (structured or {}).get("next_action") or ""
+                    run["artifacts"] = (structured or {}).get("artifacts") or run.get("artifacts", [])
+                    run["external_side_effects"] = (structured or {}).get("external_side_effects") or []
+                    run["has_external_side_effects"] = bool(run.get("external_side_effects"))
                     _harness_stage(run, "collect", "done", reply_id=rec["id"], worker_status=parsed_status or "unstructured")
+                    _harness_stage(run, "return", "done" if parsed_status == "completed" else "pending", next_action=run.get("next_action"), external_side_effects=run.get("external_side_effects"))
                 if wr.get("user_id") or wr.get("reply_to_message_id"):
+                    summary_text = (structured or {}).get("summary") or preview[:900]
+                    next_action = (structured or {}).get("next_action") or ""
+                    side_effects = (structured or {}).get("external_side_effects") or []
+                    extra_lines = []
+                    if next_action:
+                        extra_lines.append(f"下一步：{next_action[:300]}")
+                    if side_effects:
+                        extra_lines.append("外部副作用：" + _bounded(json.dumps(side_effects, ensure_ascii=False), 300))
                     _wechat_outbox_add(
                         state, inbound_id=wr.get("inbound_id") or rec["id"],
                         user_id=wr.get("user_id") or "",
                         reply_to_message_id=wr.get("reply_to_message_id") or "",
                         reply_text=(
-                            f"受控 worker 调度已回收：{wr.get('id')}（{_worker_kind_label(wr.get('kind'))}）\n"
+                            f"受控 worker 调度已回收：{wr.get('id')}（{_worker_kind_label(wr.get('kind'))}，{(structured or {}).get('status') or 'unstructured'}）\n"
                             f"来自：{msg.get('from') or ''}\n"
-                            f"摘要：{preview[:900]}"
+                            f"摘要：{summary_text[:900]}"
+                            + ("\n" + "\n".join(extra_lines) if extra_lines else "")
                         ),
                     )
         if dispatch.get("task_id"):

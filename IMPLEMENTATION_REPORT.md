@@ -1,5 +1,11 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — Structured result recovery
+
+`POST /api/lingtai/collect` now maps the important fields from `HARNESS_REPLY_JSON` onto first-class audit fields instead of leaving them only inside the raw `structured_result`: `next_action`, `artifacts`, `external_side_effects`, and `has_external_side_effects` are carried into mail result rows, worker requests, harness runs, and the WeChat-origin return text. Artifact and side-effect lists are bounded and redacted recursively before storage.
+
+Boundary retained: collection remains read-only against the LingTai inbox. It records and returns what the controller reported; it does not execute the suggested next action automatically.
+
 ## v0.24 follow-up — Harness Watchdog status
 
 `GET /api/harness/status` now includes a read-only watchdog layer for actual harness operations. Recent runs are returned with `last_activity_age_seconds`, `stale_dispatched`, `needs_attention`, and `recommended_action`; the top-level response also summarizes `needs_attention`, `stale_dispatched`, `oldest_active_age_seconds`, and `watchdog.attention_runs`. This helps a nutritionist-facing operator see whether a dispatched/controller run has not been collected for too long, whether an approval has been waiting, or whether a returned run needs human intervention.

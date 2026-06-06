@@ -345,7 +345,7 @@ time.sleep(30)
             'from':'mimo-2-5-pro',
             'to':['mimo-2-5-pro'],
             'subject':'Re: '+wdisp['subject'],
-            'message':'controller reply with structured result\n```json\n'+json.dumps({'worker_request_id':wr_id,'harness_run_id':harness_id,'status':'completed','summary':'daemon self-check harness result OK','artifacts':['selfcheck://worker'], 'next_action':'none', 'external_side_effects':[]}, ensure_ascii=False)+'\n```',
+            'message':'controller reply with structured result\n```json\n'+json.dumps({'worker_request_id':wr_id,'harness_run_id':harness_id,'status':'completed','summary':'daemon self-check harness result OK','artifacts':['selfcheck://worker', {'kind':'report','path':'selfcheck://report'}], 'next_action':'self-check next action captured', 'external_side_effects':[{'kind':'fake_network_mailbox','detail':'self-check only'}]}, ensure_ascii=False)+'\n```',
             'received_at':'2026-06-05T00:01:00Z',
         }, ensure_ascii=False), encoding='utf-8')
         wcoll=req('/api/lingtai/collect', {})
@@ -354,9 +354,12 @@ time.sleep(30)
         wr3=next(w for w in st_worker3.get('worker_requests', []) if w.get('id')==wr_id)
         assert wr3['status']=='completed' and wr3.get('reply_result_id') and 'controller_reply_collected' in wr3.get('steps', []), wr3
         assert wr3.get('structured_result', {}).get('summary')=='daemon self-check harness result OK', wr3
+        assert wr3.get('next_action')=='self-check next action captured' and wr3.get('artifacts') and wr3.get('external_side_effects'), wr3
         hrun3=next((h for h in st_worker3.get('harness_runs', []) if h.get('id')==harness_id), None)
         assert hrun3 and hrun3['status']=='completed' and hrun3.get('structured_result', {}).get('status')=='completed', hrun3
-        assert any(r.get('worker_request_id')==wr_id and r.get('worker_kind')=='daemon' and r.get('structured_result') for r in st_worker3.get('lingtai_mail_results', [])), st_worker3.get('lingtai_mail_results')
+        assert hrun3.get('next_action')=='self-check next action captured' and hrun3.get('has_external_side_effects') is True, hrun3
+        result_row=next((r for r in st_worker3.get('lingtai_mail_results', []) if r.get('worker_request_id')==wr_id and r.get('worker_kind')=='daemon' and r.get('structured_result')), None)
+        assert result_row and result_row.get('next_action')=='self-check next action captured' and result_row.get('external_side_effects'), st_worker3.get('lingtai_mail_results')
 
         # ---- v0.24 GUI 真实 Worker 启动器：请求先入确认队列；daemon 批准后写真实 controller mailbox ----
         codex_no_cost=req('/api/worker/launcher/request', {'kind':'codex','description':'self-check: should be refused without confirm_cost'})

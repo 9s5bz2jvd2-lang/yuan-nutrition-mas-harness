@@ -39,7 +39,7 @@ curl http://127.0.0.1:8765/api/harness/status
 - WeChat / GUI 来源会记录 `source`、`return_channel`、`route_id`、`task_id`、`approval_id`、`worker_request_id` 等关联，便于追踪“输入到底走到了哪里”。
 - daemon / 分神 / Codex / Claude / avatar 类请求先进入 `worker_dispatch` 确认闸；批准后写 controller 内部邮箱。
 - controller 邮件正文要求回信包含 `HARNESS_REPLY_JSON` fenced JSON，字段为 `worker_request_id / harness_run_id / status / summary / artifacts / next_action / external_side_effects`。
-- `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 与 WeChat outbox 同步更新为 `completed / needs_human / stuck / failed` 等状态。
+- `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 与 WeChat outbox 同步更新为 `completed / needs_human / stuck / failed` 等状态，并显式沉淀 `summary / artifacts / next_action / external_side_effects`。
 
 诚实边界：v0.24 已能从 GUI 真正启动 Codex/Claude 只读本机子进程和真实 avatar；daemon 仍由 Simple 写入真实 controller mailbox 后交给 controller 使用 daemon 工具执行。它仍不启动第二个微信 poller，也不绕过确认队列。
 
@@ -77,7 +77,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - `/api/task/route` 识别 daemon / 分神 / Codex / Claude / avatar 类请求后，会创建 `worker_requests[]`、本地任务和 `worker_dispatch` 确认项。
 - 批准确认项后，Simple 会写入真实 LingTai 内部邮箱，把请求交给 controller agent（默认 `mimo-2-5-pro`，可用 `LINGTAI_SIMPLE_WORKER_CONTROLLER` 覆盖）。
 - v0.23 起，调度信带 `harness_run_id`，并强制要求 controller 用 `HARNESS_REPLY_JSON` 回信。
-- `/api/lingtai/collect` 可按 `worker_request_id` / `harness_run_id` 回收 controller 回信，更新 worker request / dispatch / task / harness run；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
+- `/api/lingtai/collect` 可按 `worker_request_id` / `harness_run_id` 回收 controller 回信，更新 worker request / dispatch / task / harness run，并把 `next_action`、`artifacts`、`external_side_effects` 单独落到可审计字段；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
 - 边界：Simple 自身不直接启动第二个微信 poller，也不绕过 daemon/Codex/Claude/avatar 的既有安全纪律；这是“确认闸 + controller mailbox + 结构化回信汇总”的受控链路。
 
 ### -2. 预算/成本面板（v0.20 已接入，v0.23 保留）
