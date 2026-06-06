@@ -1,4 +1,4 @@
-/* 圆酱专属轻量版灵台 v0.22 — 前端逻辑（纯原生 JS，无依赖） */
+/* 圆酱专属轻量版灵台 v0.23 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -50,7 +50,7 @@ function statusTag(status) {
     "已暂停": "paused", "完成": "done", "已拒绝": "denied",
     "排队中": "busy", "执行中": "busy", "待确认": "waiting", "已确认": "done",
     "待派": "waiting", "已派发": "busy",
-    "queued_to_lingtai_outbox": "busy", "reply_received": "done",
+    "queued_to_lingtai_outbox": "busy", "reply_received": "done", "routing": "busy", "awaiting_approval": "waiting", "dispatched": "busy", "collecting": "busy", "needs_human": "waiting", "stuck": "stuck", "failed": "danger", "completed": "done",
     "sleep_signal_written": "paused", "suspend_signal_written": "paused", "interrupt_signal_written": "waiting", "clear_signal_written": "waiting",
   };
   return `<span class="tag ${map[status] || "idle"}">${esc(status)}</span>`;
@@ -74,6 +74,7 @@ function render() {
   renderAgents();
   renderTasks();
   renderWechat();
+  renderHarness();
   renderLingTaiRuntime();
   renderLingTaiMemory();
   renderApprovals();
@@ -167,6 +168,23 @@ function renderWechat() {
   el.innerHTML = bridgeBanner + inboxHtml + outboxHtml;
 }
 
+
+function renderHarness() {
+  const el = $("#harness-panel");
+  if (!el) return;
+  const h = STATE.harness || {};
+  const runs = STATE.harness_runs || [];
+  const protocol = h.protocol || ["intake", "route", "approval", "dispatch", "collect", "return"];
+  const banner = `<div class="preview">模式：${esc(h.mode || "lightweight_lingtai_harness")}<br>协议：${protocol.map(esc).join(" → ")}<br>${esc(h.note || "每条微信/GUI输入都会形成可审计 harness run。")}</div>
+    <div class="row-actions"><button class="btn small" onclick="openHarnessModal()">查看 harness runs</button></div>`;
+  const rows = runs.length ? runs.slice(0, 5).map(r => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">🧭 ${esc(r.id)} · ${esc(r.route_type || "route")}</span>${statusTag(r.status || "routing")}</div>
+      <div class="row-sub">来源：${esc(r.source || "")} · 回传：${esc(r.return_channel || "")} · route ${esc(r.route_id || "")}<br>${esc(r.input || "")}</div>
+    </div>`).join("") : `<div class="empty">还没有 harness run。微信/GUI 任务进入 Task Router 后会自动生成。</div>`;
+  el.innerHTML = banner + rows;
+}
+
 function renderLingTaiRuntime() {
   const el = $("#lingtai-runtime");
   if (!el) return;
@@ -188,7 +206,7 @@ function renderLingTaiRuntime() {
   const workerHtml = workers.length ? `<h4>受控 worker 调度请求</h4>` + workers.map(w => `
     <div class="row">
       <div class="row-top"><span class="row-title">🧩 ${esc(w.label || w.kind || "worker")} · ${esc(w.id)}</span>${statusTag(w.status || "awaiting_approval")}</div>
-      <div class="row-sub">controller ${esc(w.controller || "")} · task ${esc(w.task_id || "")} · route ${esc(w.route_id || "")}<br>${esc(w.description || "")}${w.reply_preview ? "<br>回信摘要：" + esc(w.reply_preview) : ""}</div>
+      <div class="row-sub">controller ${esc(w.controller || "")} · task ${esc(w.task_id || "")} · route ${esc(w.route_id || "")} · harness ${esc(w.harness_run_id || "")}<br>${esc(w.description || "")}${w.structured_result?.summary ? "<br>结构化结果：" + esc(w.structured_result.summary) : ""}${w.reply_preview ? "<br>回信摘要：" + esc(w.reply_preview) : ""}</div>
     </div>`).join("") : "";
   const dispatches = rows.length ? `<h4>真实派发记录</h4>` + rows.map(d => `
     <div class="row">
@@ -199,7 +217,7 @@ function renderLingTaiRuntime() {
     <div class="row">
       <div class="row-top"><span class="row-title">↩ ${esc(r.subject || r.mailbox_id)}</span>${statusTag("reply_received")}</div>
       <div class="row-sub">from ${esc(r.from)} · ${esc(r.received_at || "")} · dispatch ${esc(r.dispatch_id || "")}</div>
-      <div class="preview">${esc(r.message_preview || "")}</div>
+      <div class="preview">${r.structured_result?.summary ? "结构化 summary：" + esc(r.structured_result.summary) + "<br>" : ""}${esc(r.message_preview || "")}</div>
     </div>`).join("") : "";
   const lifeHtml = life.length ? `<h4>生命周期动作记录</h4>` + life.map(e => `
     <div class="row">
@@ -255,7 +273,7 @@ function renderApprovals() {
     </div>` : `
     <div class="row">
       <div class="row-top"><span class="row-title">Scoped grants</span>${statusTag("未开启")}</div>
-      <div class="row-sub">v0.22 支持“确认并允许下一次同类 / 本任务同类”。rollback、merge、lifecycle、真实 avatar 等破坏性动作仍逐项确认。</div>
+      <div class="row-sub">v0.23 支持“确认并允许下一次同类 / 本任务同类”。rollback、merge、lifecycle、真实 avatar 等破坏性动作仍逐项确认。</div>
     </div>`;
   if (!STATE.approvals.length) { el.innerHTML = grantPanel + `<div class="empty">确认队列为空。敏感动作会出现在这里。</div>`; return; }
   el.innerHTML = grantPanel + STATE.approvals.map(a => {
@@ -1032,7 +1050,7 @@ async function openHealthModal() {
 
 function openDocsModal() {
   openModal("📖 怎么看这个原型", `
-    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.18 — 真实 LingTai 内部邮箱派发里程碑</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
+    <div class="preview">这是圆酱专属轻量版灵台 <b>v0.23 — lightweight LingTai harness run protocol</b>。真实能力逐步接入：<b>模型 API 已真实可用</b>（key 进 Mac Keychain，可发真实请求）；<b>Rollback / Time Machine 已真实接入本仓库 git 快照与确认后 reset</b>；<b>微信入口已通过现有 LingTai WeChat MCP 做真实桥接</b>；Claude Code L1 只读分析、L2 本地改码与 L3 本地 commit 已接入；L4 PR / L5 merge 已接入真实 GitHub 确认闸。本地 Python 服务只是其中一个组件，后续会继续接完整 LingTai runtime/mailbox/skills/memory 与 Mac 应用外壳。</div>
     <ol>
       <li>点「模型 / API 中心」，保存某个供应商的 key（会进系统 Keychain）。</li>
       <li>勾选「我已知道这是真实调用、可能产生费用」后点「▶ 运行真实模型测试」。</li>
@@ -1078,6 +1096,27 @@ async function readLingTaiMemory(path) {
 }
 
 
+
+async function openHarnessModal() {
+  const res = await fetch("/api/harness/status");
+  const h = await res.json();
+  const counts = h.counts || {};
+  const protocol = h.harness?.protocol || [];
+  const rows = (h.recent_runs || []).map(r => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">${esc(r.id)} · ${esc(r.route_type || "")}</span>${statusTag(r.status || "")}</div>
+      <div class="row-desc"><b>输入：</b>${esc(r.input || "")}</div>
+      <div class="row-desc"><b>来源/回传：</b>${esc(r.source || "")} → ${esc(r.return_channel || "")}</div>
+      <div class="row-desc"><b>关联：</b>route ${esc(r.route_id || "")} · task ${esc(r.task_id || "")} · worker ${esc(r.worker_request_id || "")} · approval ${esc(r.approval_id || "")}</div>
+      <div class="row-desc"><b>阶段：</b>${(r.stages || []).map(st => `${esc(st.name)}(${esc(st.status || "done")})`).join(" → ")}</div>
+    </div>`).join("") || '<div class="empty">暂无 harness run。</div>';
+  openModal("🧭 Harness Run Protocol", `
+    <div class="preview">版本：${esc(h.version || "")}<br>模式：${esc(h.harness?.mode || "")}<br>协议：${protocol.map(esc).join(" → ")}<br>总数 ${counts.total_runs || 0} · 活跃 ${counts.active_runs || 0} · 待确认 ${counts.awaiting_approval || 0} · 已完成 ${counts.completed || 0}</div>
+    <div class="preview"><b>Worker 回信合同：</b>${esc(h.worker_protocol?.required_reply || "")}</div>
+    ${rows}
+  `);
+}
+
 async function openArchitectureModal() {
   const res = await fetch("/api/architecture/status");
   const a = await res.json();
@@ -1116,6 +1155,7 @@ const ACTIONS = {
   "multi-agent": openMultiAgentModal,
   "insight": openInsightModal,
   "soul": openSoulModal,
+  "harness": openHarnessModal,
   "lingtai-runtime": () => openLingTaiRuntimeModal(),
   "lingtai-memory": openLingTaiMemoryModal,
   "wechat": openWechatModal,
@@ -1166,6 +1206,7 @@ function bind() {
 window.agentAction = agentAction;
 window.approval = approval;
 window.openCostModal = openCostModal;
+window.openHarnessModal = openHarnessModal;
 window.saveCostPolicy = saveCostPolicy;
 window.quickAssign = quickAssign;
 window.submitNewAgent = submitNewAgent;

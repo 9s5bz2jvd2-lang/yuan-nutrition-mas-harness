@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.22",
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.23",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
     "created_at": "2026-06-05T08:00:00-07:00",
@@ -134,13 +134,20 @@
   "orchestrations": [],
   "insights": [],
   "soul_flows": [],
+  "harness": {
+    "mode": "lightweight_lingtai_harness",
+    "status": "ready",
+    "protocol": "intake -> route -> approval -> dispatch -> collect -> return",
+    "note": "v0.23 起把微信/GUI 输入统一记录为 harness run；每条 run 都保留路由、确认、调度、回收、回传审计链。"
+  },
+  "harness_runs": [],
   "lingtai_runtime": {
     "mode": "internal_mailbox_bridge",
     "status": "demo",
     "network_dir": "/path/to/.lingtai",
     "sender": "human",
     "reply_inbox": "mimo-2-5-pro",
-    "note": "v0.22 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
+    "note": "v0.23 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
   },
   "lingtai_dispatches": [],
   "lingtai_mail_results": [],

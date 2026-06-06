@@ -60,10 +60,10 @@ python3 scripts/self_check.py
 Expected output:
 
 ```text
-OK LingTai Simple v0.22 self-check passed
+OK LingTai Simple v0.23 self-check passed
 ```
 
-The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, v0.22 scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including WeChat-origin result aggregation. It also verifies `.secrets` is not readable through the memory endpoint.
+The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, v0.23 harness run protocol, scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including HARNESS_REPLY_JSON structured result parsing and WeChat-origin result aggregation. It also verifies `.secrets` is not readable through the memory endpoint.
 
 Developer optional checks:
 
@@ -96,6 +96,7 @@ Works locally without credentials:
 - Time Machine snapshot/preview/request inside the local git repo.
 - Read-only LingTai memory/skill index when `LINGTAI_SIMPLE_AGENT_DIR` points to a real agent directory.
 - WeChat bridge HTTP endpoint for an existing LingTai WeChat MCP bridge to call.
+- Harness status endpoint: `/api/harness/status` shows intake/route/approval/dispatch/collect/return runs.
 
 Requires local tools or credentials:
 

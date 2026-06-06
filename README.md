@@ -1,11 +1,28 @@
-# 圆酱专属轻量版灵台 / LingTai Simple v0.22
+# 圆酱专属轻量版灵台 / LingTai Simple v0.23
 
-这是“傻瓜版灵台 / 圆酱专属轻量版灵台”的本地可运行原型。v0.22 在真实 WeChat MCP 桥接入口、LingTai 内部邮箱派发/回收、记忆/技能只读索引、Secret Vault health scan + restricted fallback、统一 Task Router、预算/成本面板、受控 worker 调度基础上，新增 **确认队列 scoped grants**：对可重复且非破坏性的动作，可在一次人工确认后选择“确认并允许下一次同类”或“确认并允许本任务同类”，系统会限时限次自动确认后续同类请求并保留 `grant_id / used_by` 审计链。rollback、commit、PR、merge、lifecycle、avatar spawn/retire 等破坏性或高影响动作仍必须逐项确认，不能被 grant 放行。
+这不是“壳”或只会摆按钮的 GUI，而是一个可运行的 **lightweight LingTai harness**：把微信/GUI 输入统一收进本地 harness run，再按 `intake → route → approval → dispatch → collect → return` 协议留下审计链。v0.23 在真实 WeChat MCP 桥接入口、LingTai 内部邮箱派发/回收、记忆/技能只读索引、Secret Vault restricted fallback、统一 Task Router、预算/成本面板、受控 worker 调度、scoped approval grants 基础上，新增 **Harness Run Protocol**：每条输入都会记录 route、approval、dispatch、worker_request、structured_result 与原路回传状态；controller/worker 回信必须带 `HARNESS_REPLY_JSON` 结构化结果，方便自动汇总 summary、artifacts、next_action 与 external_side_effects。
 
+## v0.23：Lightweight LingTai Harness（不是壳）
 
-## v0.22：架构验收表（不许糊弄）
+本地可查 harness 状态：
 
-圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.22 继续用 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API 暴露真实验收状态：
+```bash
+curl http://127.0.0.1:8765/api/harness/status
+```
+
+真实新增点：
+
+- `/api/task/route` 每次调用都会创建 `harness_runs[]`，协议固定为 `intake -> route -> approval -> dispatch -> collect -> return`。
+- WeChat / GUI 来源会记录 `source`、`return_channel`、`route_id`、`task_id`、`approval_id`、`worker_request_id` 等关联，便于追踪“输入到底走到了哪里”。
+- daemon / 分神 / Codex / Claude / avatar 类请求先进入 `worker_dispatch` 确认闸；批准后写 controller 内部邮箱。
+- controller 邮件正文要求回信包含 `HARNESS_REPLY_JSON` fenced JSON，字段为 `worker_request_id / harness_run_id / status / summary / artifacts / next_action / external_side_effects`。
+- `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 与 WeChat outbox 同步更新为 `completed / needs_human / stuck / failed` 等状态。
+
+诚实边界：v0.23 仍不由 Simple 本地服务直接启动 daemon/Codex/Claude/avatar，也不启动第二个微信 poller；它做的是“轻量灵台 harness 的可审计调度协议 + controller mailbox + 结构化回收”。
+
+## v0.23：架构验收表（不许糊弄）
+
+圆酱要求“架构讨论稿里的每一项都要真实实现、可实际跑通”。v0.23 继续用 `ARCHITECTURE_ACCEPTANCE_MATRIX.md` 与本地 API 暴露真实验收状态：
 
 ```bash
 curl http://127.0.0.1:8765/api/architecture/status
@@ -13,10 +30,16 @@ curl http://127.0.0.1:8765/api/architecture/status
 
 UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partial / Missing`、已跑通证据、缺口和测试命令。原则是：**未真实跑通，不写已完成**。
 
-## v0.22 新增真实接入
+## v0.23 新增/保留真实接入
 
+### -5. Harness Run Protocol（v0.23 新增）
 
-### -4. 确认队列 scoped grants（v0.22 新增）
+- 每条微信/GUI 输入生成 `harness_run`，把 intake、route、approval、dispatch、collect、return 串成一条可审计链。
+- `/api/harness/status` 返回 harness 模式、计数、最近 runs 和 worker 回信合同。
+- worker controller 回信从自由文本升级为 `HARNESS_REPLY_JSON` 结构化结果，回收时自动写入 `structured_result`。
+- WeChat 来源的 worker 结果仍进入 `wechat_outbox`，由现有 WeChat MCP 原路回发，保持 `no_second_poller` 合同。
+
+### -4. 确认队列 scoped grants（v0.22 已接入，v0.23 保留）
 
 - 对 `wechat_send`、`email_send`、`telegram_send`、`high_cost_api`、`sensitive_task`、`budget_override`、`worker_dispatch` 这类可重复且非破坏性的动作，确认时可选择：
   - **确认/执行**：只批准当前这一项。
@@ -26,32 +49,32 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - WeChat 桥接也支持 `确认下次 <approval_id>` / `确认本任务 <approval_id>`（以及英文 `approve-once` / `approve-task`）来创建对应授权。
 - 边界：`rollback_apply`、`code_commit`、`code_pr`、`code_merge`、`lingtai_lifecycle`、`lingtai_avatar_spawn`、`lingtai_avatar_retire` 等仍必须逐项确认；scoped grants 不会绕过这些高影响动作。
 
-### -3. 受控 worker 调度（v0.21 已接入，v0.22 保留）
+### -3. 受控 worker 调度（v0.21 接入，v0.23 结构化）
 
-- `/api/task/route` 识别 daemon / 分神 / Codex / Claude / avatar 类请求后，不再只停留在 handoff 文案；会创建 `worker_requests[]`、本地任务和 `worker_dispatch` 确认项。
+- `/api/task/route` 识别 daemon / 分神 / Codex / Claude / avatar 类请求后，会创建 `worker_requests[]`、本地任务和 `worker_dispatch` 确认项。
 - 批准确认项后，Simple 会写入真实 LingTai 内部邮箱，把请求交给 controller agent（默认 `mimo-2-5-pro`，可用 `LINGTAI_SIMPLE_WORKER_CONTROLLER` 覆盖）。
-- `/api/lingtai/collect` 可按 `worker_request_id` 回收 controller 回信，更新 worker request / dispatch / task；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
-- 边界：Simple 自身不直接启动第二个微信 poller，也不绕过 daemon/Codex/Claude/avatar 的既有安全纪律；这是“确认闸 + controller mailbox + 回信汇总”的受控链路。
+- v0.23 起，调度信带 `harness_run_id`，并强制要求 controller 用 `HARNESS_REPLY_JSON` 回信。
+- `/api/lingtai/collect` 可按 `worker_request_id` / `harness_run_id` 回收 controller 回信，更新 worker request / dispatch / task / harness run；若请求来自 WeChat，则进入 `wechat_outbox`，仍由现有 WeChat MCP 原路回复。
+- 边界：Simple 自身不直接启动第二个微信 poller，也不绕过 daemon/Codex/Claude/avatar 的既有安全纪律；这是“确认闸 + controller mailbox + 结构化回信汇总”的受控链路。
 
-### -2. 预算/成本面板（v0.20 已接入，v0.22 保留）
+### -2. 预算/成本面板（v0.20 已接入，v0.23 保留）
 
 - `GET /api/cost/status`：读取本地估算成本状态、今日累计、provider/kind 分布、warnings 与最近 ledger。
 - `POST /api/cost/policy`：调整本地预算策略，包括 daily cap、provider 单次 cap、任务 cap、Claude Code run cap、长跑阈值、是否启用越线确认，以及是否清空本地 ledger。
 - `/api/model/test` 在 `confirm_cost=true` 后仍会先估算成本；如果超过策略上限，会先生成 `budget_override` 确认项，不会直接发起真实网络调用。确认后只放行 30 分钟，需用户重新执行原动作。
 - Claude Code L1/L2 也走预算预检，按 `CC_MAX_BUDGET_USD` 做本地预留估算；执行完成后写入 `cost_ledger`。
-- UI 新增“预算/成本面板”大按钮、成本卡片与策略 modal。
+- UI 有“预算/成本面板”大按钮、成本卡片与策略 modal。
 
 边界：这是本地 guardrail / 估算账本，不是供应商真实账单、余额查询或自动扣费审计；默认价格表只用于保守提醒，必须按实际 provider/model 校准。
 
+### -1. 统一 Task Router / WeChat runner contract（v0.18 接入，v0.23 升级为 harness 入口）
 
-### -1. 统一 Task Router / WeChat runner contract（v0.22 保留）
-
-- `POST /api/task/route`：把一句话分类为普通本地任务、多 agent、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划。
+- `POST /api/task/route`：把一句话分类为普通本地任务、多 agent、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划，并创建 harness run。
 - `POST /api/wechat/bridge/pending`：返回 `ready_for_bridge` 的微信 outbox 项，供当前 LingTai WeChat MCP 桥接者发送；runner contract 固定为 `no_second_poller`。
-- `/api/wechat/bridge/incoming` 的默认普通消息现在走统一 Task Router，并在 inbox 记录 `route_id`，便于追踪“微信一句话 → 路由 → 本地任务/真实邮箱/回收/计划”的路径。
+- `/api/wechat/bridge/incoming` 的默认普通消息走统一 Task Router / Harness，并在 inbox 记录 `route_id` 与 `harness_run_id`，便于追踪“微信一句话 → 路由 → 确认/派发/回收/回传”的路径。
 - `confirm_dispatch=true` 时，router 可在 fake/真实 `.lingtai` 网络中写入真实内部邮箱 outbox；未确认时只创建本地任务并提示需要确认，避免误唤醒/占用真实 agent。
 
-边界：v0.22 不是独立微信 poller，也不会由本地 Simple 服务直接启动 daemon 或绕过 Claude Code/费用确认；代码苦力和 daemon 类任务只记录 handoff/计划，真实执行仍走对应受控入口。
+边界：v0.23 不是独立微信 poller，也不会由本地 Simple 服务直接启动 daemon 或绕过 Claude Code/费用确认；代码苦力和 daemon 类任务真实执行仍走对应受控入口。
 
 ### 0. LingTai 记忆 / 技能只读索引（v0.17 新增）
 
@@ -102,6 +125,7 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 - 真实 LingTai 回复回收：`POST /api/lingtai/collect`。
 - 真实 LingTai 生命周期确认闸：`POST /api/lingtai/lifecycle/request` → approve 后写 signal / CPR。
 - 真实 LingTai 记忆 / 技能只读索引：pad / knowledge / custom/shared skills / 最近凝蜕摘要只读可见。
+- Lightweight LingTai Harness：`/api/task/route` 与 WeChat 默认入口会创建 harness run，把 intake/route/approval/dispatch/collect/return 串成可审计链。
 - 统一 Task Router：`/api/task/route` 与 WeChat 默认入口可把一句话路由到普通任务、多 agent、洞察、心流、收功、真实 mailbox 派发/回收或受控 handoff。
 
 ## 从 GitHub 下载运行
@@ -129,8 +153,8 @@ python3 scripts/self_check.py
 
 ## 仍未完成
 
-- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.22 提供 pending outbox/runner contract）。
-- 完整 LingTai avatar spawn / delete 管理；v0.14 只做到既有 agent 发现、派发、回复回收、确认后 signal/CPR。
+- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.23 提供 pending outbox/runner contract 与 harness run 审计链）。
+- 完整 LingTai avatar spawn / delete 管理；当前做到既有 agent 发现/绑定、安全 shallow spawn、退休/解绑、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。
 - 公开发布/下载运行体验仍在继续打磨；当前已提供 `run.sh`、macOS `.command`、`QUICKSTART.md` 与 `scripts/self_check.py`。

@@ -1,5 +1,15 @@
-# LingTai Simple v0.22 Implementation Report
+# LingTai Simple v0.23 Implementation Report
 
+
+## v0.23 Update — Lightweight LingTai Harness Run Protocol
+
+v0.23 responds to the correction that LingTai Simple is not a shell or GUI wrapper: it is a usable lightweight LingTai harness. Every `/api/task/route` input now creates a `harness_run` that records the protocol `intake -> route -> approval -> dispatch -> collect -> return`. The run links source, return channel, route id, task id, approval id, dispatch id, worker request id, and final collection/return state so a WeChat or GUI request can be audited end-to-end.
+
+Controlled worker dispatch is now harness-aware. Worker requests carry `harness_run_id`; approval records keep `worker_harness_run_id`; approved controller mailbox messages require a `HARNESS_REPLY_JSON` fenced JSON payload with `worker_request_id`, `harness_run_id`, `status`, `summary`, `artifacts`, `next_action`, and `external_side_effects`. `/api/lingtai/collect` parses that structured result, normalizes statuses to `completed / needs_human / stuck / failed`, updates worker/task/harness state, and queues WeChat-origin summaries back into the existing no-second-poller outbox.
+
+New API: `GET /api/harness/status` returns harness mode, counts, recent runs, and the worker reply contract. Self-check now verifies ordinary route harness creation, worker harness linkage, controller mailbox body contract, structured fake controller reply parsing, and completed worker/harness state.
+
+Honest boundary: Simple still does not directly start daemon/Codex/Claude/avatar workers and still does not run an autonomous WeChat poller. v0.23 is the auditable harness layer: intake, routing, approval, controller dispatch, structured collection, and return.
 
 ## v0.22 Update — Scoped Approval Grants
 
@@ -31,11 +41,11 @@ New / changed endpoints:
 Validation added:
 
 - `scripts/self_check.py` now verifies scoped approval grants, ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
-- Expected output: `OK LingTai Simple v0.22 self-check passed`.
+- Expected output: `OK LingTai Simple v0.23 self-check passed`.
 
 Honest boundary:
 
-- v0.22 is still not an autonomous standalone WeChat poller. It is the local routing/contract layer for the existing LingTai WeChat MCP bridge.
+- v0.23 is still not an autonomous standalone WeChat poller. It is the local harness/routing/contract layer for the existing LingTai WeChat MCP bridge.
 - Code-worker and daemon routes intentionally record handoff/plan instead of bypassing the existing Claude Code/daemon confirmation surfaces.
 
 ## v0.17 Update — real LingTai memory / skill index
@@ -63,7 +73,7 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK LingTai Simple v0.22 self-check passed`.
+- Expected output: `OK LingTai Simple v0.23 self-check passed`.
 
 
 ## v0.17.1 Download-and-run packaging
@@ -131,7 +141,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK LingTai Simple v0.22 self-check passed
+OK LingTai Simple v0.23 self-check passed
 ```
 
 ## Boundaries
@@ -151,7 +161,7 @@ OK LingTai Simple v0.22 self-check passed
 - Bound-card delete now routes to `lingtai_avatar_retire`; raw filesystem deletion remains intentionally absent.
 - Self-check validates bind, delete-to-retire routing, approval execution, and confirms the fake real agent directory remains present.
 
-## v0.22 架构验收矩阵
+## v0.23 架构验收矩阵
 
 新增：
 

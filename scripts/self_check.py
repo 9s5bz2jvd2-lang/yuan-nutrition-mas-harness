@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LingTai Simple v0.22 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
+"""LingTai Simple v0.23 本地自检：启动临时 server，验证 GUI/API/脱敏/确认队列/Keychain。
 
 安全约束：
 - 绝不调用真实外部模型 API（不勾选 confirm_cost；只验证「未确认时被拒绝」）。
@@ -89,7 +89,7 @@ time.sleep(30)
         time.sleep(1.0)
         assert '圆酱' in req('/')
         health=req('/api/health'); assert health['ok'], health
-        assert health['version']=='v0.22', health
+        assert health['version']=='v0.23', health
         assert 'claude_code_available' in health['checks'], health
         assert health['keychain_available'] is False, health
         assert health['checks'].get('secret_vault_scan') is True, health
@@ -98,7 +98,7 @@ time.sleep(30)
         assert 'real WeChat command entry' in boundaries
         assert 'durable-store index' in boundaries, health
         arch=req('/api/architecture/status')
-        assert arch['ok'] and arch['version']=='v0.22' and arch['summary']['total'] >= 10, arch
+        assert arch['ok'] and arch['version']=='v0.23' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
         assert any(i['id']=='A01' and i['status']=='partial' for i in arch['items']), arch
         assert any(i['id']=='A11' and i['status']=='done' for i in arch['items']), arch
@@ -196,7 +196,7 @@ time.sleep(30)
         cost1=req('/api/cost/status')
         assert cost1['ok'] and any(o.get('kind')=='model_call' and o.get('provider_id')=='deepseek' for o in cost1['policy'].get('active_overrides', [])), cost1
 
-        # ---- v0.22 scoped approval grants: allow-once creates a bounded grant; the next same action is auto-confirmed ----
+        # ---- v0.23 scoped approval grants: allow-once creates a bounded grant; the next same action is auto-confirmed ----
         manual_ap=req('/api/approval/add', {
             'action':'sensitive_task', 'title':'self-check scoped grant seed',
             'detail':'local-only self-check action, no external side effect',
@@ -253,6 +253,9 @@ time.sleep(30)
         assert route_local['ok'] and route_local['result']['route_type']=='local_task' and route_local['result'].get('task_id'), route_local
         st_route=req('/api/state')
         assert st_route.get('router_runs') and st_route['router_runs'][0]['id']==route_local['result']['id'], st_route.get('router_runs')
+        hs0=req('/api/harness/status')
+        assert hs0['ok'] and hs0['version']=='v0.23' and hs0['counts']['total_runs'] >= 1, hs0
+        assert st_route.get('harness_runs') and st_route['harness_runs'][0].get('protocol') and st_route['harness_runs'][0].get('route_id')==route_local['result']['id'], st_route.get('harness_runs')
         route_need_confirm=req('/api/task/route', {'text':'派发 worker-one 自检路由：需要先确认再写真实邮箱', 'source':'self_check'})
         assert route_need_confirm['ok'] and route_need_confirm['result']['route_type']=='lingtai_mailbox' and route_need_confirm['result']['status']=='needs_confirm_dispatch', route_need_confirm
         route_disp=req('/api/task/route', {'text':'派发 worker-one 自检路由：确认后写入真实 fake outbox', 'source':'self_check', 'confirm_dispatch': True})
@@ -278,17 +281,20 @@ time.sleep(30)
         st_reply=req('/api/state')
         assert st_reply.get('lingtai_mail_results') and st_reply['lingtai_dispatches'][0]['status']=='reply_received', st_reply
 
-        # ---- v0.22 受控 worker 调度：Task Router 只创建确认闸；批准后写真实内部邮箱给 controller，再按 worker_request_id 回收结果 ----
+        # ---- v0.23 受控 worker 调度：Task Router 只创建确认闸；批准后写真实内部邮箱给 controller，再按 worker_request_id 回收结果 ----
         worker_route=req('/api/task/route', {'text':'daemon 分神：请扫一遍 self-check worker 调度链路并总结', 'source':'self_check'})
         assert worker_route['ok'] and worker_route['result']['route_type']=='daemon_plan', worker_route
         assert worker_route['result']['status']=='awaiting_worker_dispatch_approval', worker_route
         wr_id=worker_route['result']['worker_request_id']
         ap_id=worker_route['result']['approval_id']
+        harness_id=worker_route['result']['harness_run_id']
         st_worker=req('/api/state')
         wr=next((w for w in st_worker.get('worker_requests', []) if w.get('id')==wr_id), None)
-        assert wr and wr['status']=='awaiting_approval' and wr['kind']=='daemon' and wr['controller']=='mimo-2-5-pro', st_worker.get('worker_requests')
+        assert wr and wr['status']=='awaiting_approval' and wr['kind']=='daemon' and wr['controller']=='mimo-2-5-pro' and wr.get('harness_run_id')==harness_id, st_worker.get('worker_requests')
+        hrun=next((h for h in st_worker.get('harness_runs', []) if h.get('id')==harness_id), None)
+        assert hrun and hrun['status']=='awaiting_approval' and hrun.get('worker_request_id')==wr_id, st_worker.get('harness_runs')
         wap=next((a for a in st_worker.get('approvals', []) if a.get('id')==ap_id and a.get('action')=='worker_dispatch'), None)
-        assert wap and wap.get('worker_request_id')==wr_id and wap.get('worker_kind')=='daemon', st_worker.get('approvals')
+        assert wap and wap.get('worker_request_id')==wr_id and wap.get('worker_kind')=='daemon' and wap.get('worker_harness_run_id')==harness_id, st_worker.get('approvals')
         worker_ok=req('/api/approval/approve', {'approval_id': ap_id})
         assert worker_ok['ok'], worker_ok
         st_worker2=req('/api/state')
@@ -299,7 +305,7 @@ time.sleep(30)
         wmsg_path=pathlib.Path(wdisp['outbox_path'])/'message.json'
         assert wmsg_path.exists(), wdisp
         wmsg=json.loads(wmsg_path.read_text(encoding='utf-8'))
-        assert wr_id in wmsg['message'] and 'worker_request_id' in wmsg['message'] and wmsg['to']==['mimo-2-5-pro'], wmsg
+        assert wr_id in wmsg['message'] and harness_id in wmsg['message'] and 'HARNESS_REPLY_JSON' in wmsg['message'] and 'worker_request_id' in wmsg['message'] and wmsg['to']==['mimo-2-5-pro'], wmsg
         winbox=fake_network/'mimo-2-5-pro'/'mailbox'/'inbox'/'reply-worker-selfcheck-0001'
         winbox.mkdir(parents=True, exist_ok=True)
         (winbox/'message.json').write_text(json.dumps({
@@ -307,15 +313,18 @@ time.sleep(30)
             'from':'mimo-2-5-pro',
             'to':['mimo-2-5-pro'],
             'subject':'Re: '+wdisp['subject'],
-            'message':'controller reply: worker_request_id '+wr_id+' 已完成 daemon self-check 汇总。',
+            'message':'controller reply with structured result\n```json\n'+json.dumps({'worker_request_id':wr_id,'harness_run_id':harness_id,'status':'completed','summary':'daemon self-check harness result OK','artifacts':['selfcheck://worker'], 'next_action':'none', 'external_side_effects':[]}, ensure_ascii=False)+'\n```',
             'received_at':'2026-06-05T00:01:00Z',
         }, ensure_ascii=False), encoding='utf-8')
         wcoll=req('/api/lingtai/collect', {})
         assert wcoll['ok'] and wcoll['result']['collected']==1, wcoll
         st_worker3=req('/api/state')
         wr3=next(w for w in st_worker3.get('worker_requests', []) if w.get('id')==wr_id)
-        assert wr3['status']=='reply_received' and wr3.get('reply_result_id') and 'controller_reply_collected' in wr3.get('steps', []), wr3
-        assert any(r.get('worker_request_id')==wr_id and r.get('worker_kind')=='daemon' for r in st_worker3.get('lingtai_mail_results', [])), st_worker3.get('lingtai_mail_results')
+        assert wr3['status']=='completed' and wr3.get('reply_result_id') and 'controller_reply_collected' in wr3.get('steps', []), wr3
+        assert wr3.get('structured_result', {}).get('summary')=='daemon self-check harness result OK', wr3
+        hrun3=next((h for h in st_worker3.get('harness_runs', []) if h.get('id')==harness_id), None)
+        assert hrun3 and hrun3['status']=='completed' and hrun3.get('structured_result', {}).get('status')=='completed', hrun3
+        assert any(r.get('worker_request_id')==wr_id and r.get('worker_kind')=='daemon' and r.get('structured_result') for r in st_worker3.get('lingtai_mail_results', [])), st_worker3.get('lingtai_mail_results')
 
         # ---- v0.14 真实 LingTai 生命周期确认闸：只加入确认队列，不在 self-check 中执行真实 signal/CPR ----
         life=req('/api/lingtai/lifecycle/request', {'address':'worker-one','action':'lull'})
@@ -366,7 +375,7 @@ time.sleep(30)
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx
-        assert 'LingTai Simple v0.22' in wx['result']['reply_text'], wx
+        assert 'LingTai Simple v0.23' in wx['result']['reply_text'], wx
         out_id=wx['result']['outbox']['id']
         sent=req('/api/wechat/bridge/mark_sent', {'outbox_id':out_id,'sent_message_id':'sent_selfcheck_status'})
         assert sent['ok'] and sent['result']['status']=='sent', sent
@@ -398,7 +407,7 @@ time.sleep(30)
         wx_orch=req('/api/wechat/bridge/incoming', {'text':'多agent 做一个认真版本','user_id':'wx_selfcheck','message_id':'msg_selfcheck_orch','sender':'圆酱'})
         assert wx_orch['ok'] and '批次' in wx_orch['result']['reply_text'], wx_orch
 
-        # ---- v0.22 WeChat 来源的 worker 调度：确认后回收 controller 回信，并进入 no_second_poller outbox ----
+        # ---- v0.23 WeChat 来源的 worker 调度：确认后回收 controller 回信，并进入 no_second_poller outbox ----
         wx_worker=req('/api/wechat/bridge/incoming', {
             'text':'daemon 分神 帮我检查微信来源 worker 汇总链路',
             'user_id':'wx_selfcheck','message_id':'msg_selfcheck_worker','sender':'圆酱'})
@@ -451,7 +460,7 @@ time.sleep(30)
         assert not cc_l4['ok'] and ('工作区' in (cc_l4.get('error') or '') or '没有新 commit' in (cc_l4.get('error') or '') or 'GitHub' in (cc_l4.get('error') or '')), cc_l4
 
         assert FAKE_KEY not in state_text(state), 'FAKE KEY LEAKED after later writes!'
-        print('OK LingTai Simple v0.22 self-check passed')
+        print('OK LingTai Simple v0.23 self-check passed')
     finally:
         proc.terminate()
         try: proc.wait(timeout=2)
