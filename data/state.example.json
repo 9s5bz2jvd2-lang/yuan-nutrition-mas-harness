@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.12",
+    "name": "圆酱专属轻量版灵台 / LingTai Simple v0.13",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
     "created_at": "2026-06-05T08:00:00-07:00",
@@ -89,11 +89,12 @@
     "network_dir": "/path/to/.lingtai",
     "sender": "human",
     "reply_inbox": "mimo-2-5-pro",
-    "note": "v0.12 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
+    "note": "v0.13 起支持 Simple → LingTai 内部邮箱派发，并可从 reply_inbox 回收真实 agent 回复。"
   },
   "lingtai_dispatches": [],
   "lingtai_mail_results": [],
   "lingtai_lifecycle_events": [],
+  "lingtai_avatar_events": [],
   "snapshots": [],
   "log": []
 }
