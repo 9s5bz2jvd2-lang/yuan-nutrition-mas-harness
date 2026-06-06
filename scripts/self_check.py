@@ -287,6 +287,22 @@ time.sleep(30)
         assert watched and watched['stale_dispatched'] is True and watched['needs_attention'] is True, hs_watch.get('recent_runs')
         assert watched['recommended_action']=='run_collect_or_check_controller' and watched['last_activity_age_seconds'] >= hs_watch['watchdog']['stale_dispatch_seconds'], watched
         assert any(r.get('id')=='harness_selfcheck_stale' for r in hs_watch['watchdog']['attention_runs']), hs_watch['watchdog']
+        # ---- v0.24 follow-up manual harness resolution：只更新本地状态/审计字段，不触发外部工具或邮箱 ----
+        manual=req('/api/harness/resolve', {
+            'harness_run_id':'harness_selfcheck_stale',
+            'status':'completed',
+            'resolution_summary':'self-check operator manually closed a stale harness run',
+            'next_action':'self-check manual resolution captured',
+            'artifacts':['selfcheck://manual-resolution'],
+            'external_side_effects':[],
+        })
+        assert manual['ok'] and manual['result']['status']=='completed', manual
+        st_manual=req('/api/state')
+        manual_run=next((r for r in st_manual.get('harness_runs', []) if r.get('id')=='harness_selfcheck_stale'), None)
+        assert manual_run and manual_run['status']=='completed', st_manual.get('harness_runs')
+        assert manual_run.get('manual_resolution', {}).get('summary')=='self-check operator manually closed a stale harness run', manual_run
+        assert manual_run.get('next_action')=='self-check manual resolution captured' and manual_run.get('artifacts')==['selfcheck://manual-resolution'], manual_run
+        assert any(s.get('name')=='manual_resolution' and s.get('status')=='done' for s in manual_run.get('stages', [])), manual_run.get('stages')
         route_need_confirm=req('/api/task/route', {'text':'派发 worker-one 自检路由：需要先确认再写真实邮箱', 'source':'self_check'})
         assert route_need_confirm['ok'] and route_need_confirm['result']['route_type']=='lingtai_mailbox' and route_need_confirm['result']['status']=='needs_confirm_dispatch', route_need_confirm
         route_disp=req('/api/task/route', {'text':'派发 worker-one 自检路由：确认后写入真实 fake outbox', 'source':'self_check', 'confirm_dispatch': True})

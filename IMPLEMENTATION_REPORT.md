@@ -1,5 +1,11 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — Manual harness resolution
+
+`POST /api/harness/resolve` lets a local operator manually close or update a `harness_run` that is already `needs_human` / `stuck` / `failed` or has been marked `needs_attention` by the watchdog. It accepts `harness_run_id`, target status, a required `resolution_summary`/`reason`, and optional `next_action`, `artifacts`, and `external_side_effects`; it writes a `manual_resolution` audit object, updates first-class run fields, appends the `manual_resolution` harness stage, and mirrors linked worker/task state where present.
+
+Boundary retained: this endpoint is local state repair only. It does not call external tools, send WeChat, approve actions, or dispatch LingTai mail.
+
 ## v0.24 follow-up — Structured result recovery
 
 `POST /api/lingtai/collect` now maps the important fields from `HARNESS_REPLY_JSON` onto first-class audit fields instead of leaving them only inside the raw `structured_result`: `next_action`, `artifacts`, `external_side_effects`, and `has_external_side_effects` are carried into mail result rows, worker requests, harness runs, and the WeChat-origin return text. Artifact and side-effect lists are bounded and redacted recursively before storage.

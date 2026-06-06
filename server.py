@@ -3553,6 +3553,96 @@ def harness_status(state):
     }
 
 
+def resolve_harness_run(state, payload):
+    """Manual local-only closure/update for a harness run that needs operator attention."""
+    payload = payload or {}
+    harness_run_id = str(payload.get("harness_run_id") or "").strip()
+    if not harness_run_id:
+        return None, "请提供 harness_run_id"
+    status = str(payload.get("status") or "").strip().lower()
+    allowed_status = {"completed", "needs_human", "stuck", "failed"}
+    if status not in allowed_status:
+        return None, "status 只能是 completed / needs_human / stuck / failed"
+    summary = str(payload.get("resolution_summary") or payload.get("reason") or "").strip()
+    if not summary:
+        return None, "请提供非空 resolution_summary 或 reason"
+    run = _harness_run_by_id(state, harness_run_id)
+    if not run:
+        return None, f"找不到 harness_run：{harness_run_id}"
+
+    now = datetime.now(timezone.utc)
+    watched = _harness_watch_item(
+        run,
+        now=now,
+        stale_dispatch_seconds=int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_DISPATCH_SECONDS", "900")),
+        stale_approval_seconds=int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_APPROVAL_SECONDS", "7200")),
+    )
+    if not watched.get("needs_attention") and run.get("status") not in allowed_status:
+        return None, "只允许人工处理 needs_human/stuck/failed 或 watchdog 标记 needs_attention 的 harness run"
+
+    resolved_at = now.isoformat()
+    safe_summary = redact(summary)[:2000]
+    next_action = redact(str(payload.get("next_action") or ""))[:1000]
+    artifacts = _structured_list(payload.get("artifacts"), max_items=20, max_text=800)
+    external_side_effects = _structured_list(payload.get("external_side_effects"), max_items=20, max_text=800)
+    has_external_side_effects = bool(external_side_effects)
+    manual_resolution = {
+        "resolved_at": resolved_at,
+        "status": status,
+        "summary": safe_summary,
+        "next_action": next_action,
+        "artifacts": artifacts,
+        "external_side_effects": external_side_effects,
+    }
+
+    run["status"] = status
+    run["manual_resolution"] = manual_resolution
+    run["next_action"] = next_action
+    run["artifacts"] = artifacts
+    run["external_side_effects"] = external_side_effects
+    run["has_external_side_effects"] = has_external_side_effects
+    _harness_stage(
+        run,
+        "manual_resolution",
+        "done",
+        resolved_status=status,
+        summary=safe_summary[:500],
+        next_action=next_action,
+        external_side_effects=external_side_effects,
+    )
+
+    worker_request_id = run.get("worker_request_id") or str(payload.get("worker_request_id") or "").strip()
+    wr = _worker_request_by_id(state, worker_request_id) if worker_request_id else None
+    if not wr:
+        wr = next((w for w in state.setdefault("worker_requests", []) if w.get("harness_run_id") == harness_run_id), None)
+    if wr:
+        wr["status"] = status
+        wr["manual_resolution"] = manual_resolution
+        wr["next_action"] = next_action
+        wr["artifacts"] = artifacts
+        wr["external_side_effects"] = external_side_effects
+        wr["has_external_side_effects"] = has_external_side_effects
+        wr.setdefault("steps", []).append("manual_harness_resolution")
+        wr["completed_at"] = resolved_at
+        run["worker_request_id"] = wr.get("id")
+
+    task_id = run.get("task_id") or (wr or {}).get("task_id") or str(payload.get("task_id") or "").strip()
+    task = _task_by_id(state, task_id) if task_id else None
+    if task:
+        task["status"] = "完成" if status == "completed" else "待处理"
+        task["result"] = f"人工 harness resolution（{status}）：{safe_summary[:500]}"
+        run["task_id"] = task.get("id")
+
+    log_event(state, f"人工关闭/更新 harness run：{harness_run_id} -> {status}", kind="harness")
+    return {
+        "harness_run_id": harness_run_id,
+        "status": status,
+        "manual_resolution": manual_resolution,
+        "worker_request_id": (wr or {}).get("id", ""),
+        "task_id": (task or {}).get("id", ""),
+    }, None
+
+
 def _record_router_run(state, route):
     _harness_update_from_route(state, route)
     state.setdefault("router_runs", []).insert(0, route)
@@ -5740,6 +5830,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/agent/create": lambda s, p: create_agent(s, p),
             "/api/task/assign": lambda s, p: assign_task(s, p),
             "/api/task/route": lambda s, p: route_task(s, p),
+            "/api/harness/resolve": lambda s, p: resolve_harness_run(s, p),
             "/api/worker/launcher/request": lambda s, p: request_worker_launch(s, p),
             "/api/agent/orchestrate": lambda s, p: orchestrate_multi_agent(s, p),
             "/api/lingtai/dispatch": lambda s, p: dispatch_task_to_lingtai(s, p),
