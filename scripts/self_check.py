@@ -303,6 +303,51 @@ time.sleep(30)
         assert manual_run.get('manual_resolution', {}).get('summary')=='self-check operator manually closed a stale harness run', manual_run
         assert manual_run.get('next_action')=='self-check manual resolution captured' and manual_run.get('artifacts')==['selfcheck://manual-resolution'], manual_run
         assert any(s.get('name')=='manual_resolution' and s.get('status')=='done' for s in manual_run.get('stages', [])), manual_run.get('stages')
+        # ---- v0.24 follow-up harness recovery：collect 只读；retry 只创建确认门，不自动重发邮箱 ----
+        st_for_recovery=json.loads(state.read_text(encoding='utf-8'))
+        recover_run={
+            'id':'harness_selfcheck_recover',
+            'created_at':'2000-01-01T00:00:00+00:00',
+            'updated_at':'2000-01-01T00:00:00+00:00',
+            'source':'self_check',
+            'return_channel':'ui',
+            'input':'daemon 分神：self-check recover retry target',
+            'route_type':'daemon_plan',
+            'status':'stuck',
+            'protocol':'intake -> route -> approval -> dispatch -> collect -> return',
+            'stages':[{'name':'dispatch','status':'done','at':'2000-01-01T00:00:00+00:00'}],
+            'artifacts':[],
+            'risk_gates':[],
+        }
+        st_for_recovery.setdefault('harness_runs', []).insert(0, recover_run)
+        before_recover_dispatches=len(st_for_recovery.get('lingtai_dispatches', []))
+        state.write_text(json.dumps(st_for_recovery, ensure_ascii=False, indent=2), encoding='utf-8')
+        recover_collect=req('/api/harness/recover', {'harness_run_id':'harness_selfcheck_recover', 'action':'collect'})
+        assert recover_collect['ok'] and recover_collect['result']['action']=='collect' and recover_collect['result']['external_side_effects']==[], recover_collect
+        st_recover_collect=req('/api/state')
+        recover_run_after_collect=next((r for r in st_recover_collect.get('harness_runs', []) if r.get('id')=='harness_selfcheck_recover'), None)
+        assert recover_run_after_collect and any(x.get('name')=='recovery_collect' for x in recover_run_after_collect.get('stages', [])), recover_run_after_collect
+        assert len(st_recover_collect.get('lingtai_dispatches', []))==before_recover_dispatches, st_recover_collect.get('lingtai_dispatches')
+        recover_retry=req('/api/harness/recover', {
+            'harness_run_id':'harness_selfcheck_recover',
+            'action':'request_retry',
+            'retry_description':'daemon 分神：self-check recover retry target',
+            'reason':'self-check asks for approval-gated retry',
+        })
+        assert recover_retry['ok'] and recover_retry['result']['action']=='request_retry', recover_retry
+        assert recover_retry['result']['approval_id'] and recover_retry['result']['worker_request_id'], recover_retry
+        assert recover_retry['result']['dispatches_created']==0 and recover_retry['result']['external_side_effects']==[], recover_retry
+        st_recover_retry=req('/api/state')
+        recover_run_after_retry=next((r for r in st_recover_retry.get('harness_runs', []) if r.get('id')=='harness_selfcheck_recover'), None)
+        assert recover_run_after_retry and recover_run_after_retry['status']=='awaiting_approval', recover_run_after_retry
+        assert any(x.get('name')=='recovery_retry' and x.get('status')=='pending' for x in recover_run_after_retry.get('stages', [])), recover_run_after_retry.get('stages')
+        retry_wr=next((w for w in st_recover_retry.get('worker_requests', []) if w.get('id')==recover_retry['result']['worker_request_id']), None)
+        assert retry_wr and retry_wr['status']=='awaiting_approval' and retry_wr.get('harness_run_id')=='harness_selfcheck_recover', retry_wr
+        retry_ap=next((a for a in st_recover_retry.get('approvals', []) if a.get('id')==recover_retry['result']['approval_id']), None)
+        assert retry_ap and retry_ap.get('action')=='worker_dispatch' and retry_ap.get('worker_harness_run_id')=='harness_selfcheck_recover', retry_ap
+        assert len(st_recover_retry.get('lingtai_dispatches', []))==before_recover_dispatches, st_recover_retry.get('lingtai_dispatches')
+        recover_retry_again=req('/api/harness/recover', {'harness_run_id':'harness_selfcheck_recover', 'action':'request_retry', 'retry_description':'should be rejected'})
+        assert not recover_retry_again['ok'] and '等待确认' in recover_retry_again.get('error',''), recover_retry_again
         route_need_confirm=req('/api/task/route', {'text':'派发 worker-one 自检路由：需要先确认再写真实邮箱', 'source':'self_check'})
         assert route_need_confirm['ok'] and route_need_confirm['result']['route_type']=='lingtai_mailbox' and route_need_confirm['result']['status']=='needs_confirm_dispatch', route_need_confirm
         route_disp=req('/api/task/route', {'text':'派发 worker-one 自检路由：确认后写入真实 fake outbox', 'source':'self_check', 'confirm_dispatch': True})

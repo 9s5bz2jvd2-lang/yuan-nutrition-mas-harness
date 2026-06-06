@@ -3643,6 +3643,117 @@ def resolve_harness_run(state, payload):
     }, None
 
 
+def recover_harness_run(state, payload):
+    """Operator recovery actions for an attention-needed harness run.
+
+    `collect` is read-only against the LingTai reply inbox and only updates local
+    state if a reply is already present. `request_retry` creates a new approval
+    gate for a worker dispatch, but never writes mailbox/outbox by itself.
+    """
+    payload = payload or {}
+    harness_run_id = str(payload.get("harness_run_id") or "").strip()
+    if not harness_run_id:
+        return None, "请提供 harness_run_id"
+    action = str(payload.get("action") or "collect").strip().lower().replace("-", "_")
+    run = _harness_run_by_id(state, harness_run_id)
+    if not run:
+        return None, f"找不到 harness_run：{harness_run_id}"
+
+    now = datetime.now(timezone.utc)
+    watched = _harness_watch_item(
+        run,
+        now=now,
+        stale_dispatch_seconds=int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_DISPATCH_SECONDS", "900")),
+        stale_approval_seconds=int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_APPROVAL_SECONDS", "7200")),
+    )
+
+    if action == "collect":
+        before_results = len(state.setdefault("lingtai_mail_results", []))
+        coll, err = collect_lingtai_mail_results(state, payload)
+        if err:
+            return None, err
+        after_results = len(state.setdefault("lingtai_mail_results", []))
+        refreshed = _harness_run_by_id(state, harness_run_id) or run
+        _harness_stage(
+            refreshed,
+            "recovery_collect",
+            "done",
+            collected=(coll or {}).get("collected", 0),
+            new_results=max(0, after_results - before_results),
+            mode="read_only",
+        )
+        log_event(state, f"harness recovery collect：{harness_run_id} / collected={(coll or {}).get('collected', 0)}", kind="harness")
+        return {
+            "action": "collect",
+            "harness_run_id": harness_run_id,
+            "status": refreshed.get("status"),
+            "collected": (coll or {}).get("collected", 0),
+            "new_results": max(0, after_results - before_results),
+            "external_side_effects": [],
+            "note": "read-only collect; no dispatch/send/approval was performed",
+        }, None
+
+    if action in ("request_retry", "retry"):
+        if run.get("status") == "awaiting_approval":
+            return None, "该 run 已在等待确认；请先 review/approve/deny 当前确认项，不要重复创建 retry"
+        if not watched.get("needs_attention") and run.get("status") not in ("failed", "stuck", "needs_human"):
+            return None, "只允许为 watchdog 标记 needs_attention 或 failed/stuck/needs_human 的 run 创建 retry 确认门"
+        old_worker_request_id = run.get("worker_request_id") or str(payload.get("worker_request_id") or "").strip()
+        old_wr = _worker_request_by_id(state, old_worker_request_id) if old_worker_request_id else None
+        retry_text = str(payload.get("retry_description") or payload.get("text") or payload.get("description") or run.get("input") or "").strip()
+        if not retry_text:
+            return None, "请提供 retry_description；原 run 没有可复用的任务描述"
+        reason = redact(str(payload.get("reason") or "operator requested harness retry").strip())[:1000]
+        before_dispatches = len(state.setdefault("lingtai_dispatches", []))
+        wr, err = create_controlled_worker_request(state, {
+            "text": retry_text,
+            "source": payload.get("source") or "harness_recovery",
+            "route_type": payload.get("route_type") or run.get("route_type") or "daemon_plan",
+            "worker_kind": payload.get("worker_kind") or run.get("worker_kind") or (old_wr or {}).get("kind"),
+            "controller": payload.get("controller") or (old_wr or {}).get("controller"),
+            "inbound_id": run.get("inbound_id") or payload.get("inbound_id"),
+            "user_id": run.get("user_id") or payload.get("user_id"),
+            "reply_to_message_id": run.get("reply_to_message_id") or payload.get("reply_to_message_id") or payload.get("message_id"),
+            "harness_run_id": harness_run_id,
+        })
+        if err:
+            return None, err
+        refreshed = _harness_run_by_id(state, harness_run_id) or run
+        refreshed["recovery"] = {
+            "action": "request_retry",
+            "requested_at": now_iso(),
+            "reason": reason,
+            "old_worker_request_id": old_worker_request_id,
+            "worker_request_id": wr.get("id"),
+            "approval_id": wr.get("approval_id"),
+            "no_auto_dispatch": True,
+        }
+        _harness_stage(
+            refreshed,
+            "recovery_retry",
+            "pending",
+            old_worker_request_id=old_worker_request_id,
+            worker_request_id=wr.get("id"),
+            approval_id=wr.get("approval_id"),
+            reason=reason[:500],
+        )
+        after_dispatches = len(state.setdefault("lingtai_dispatches", []))
+        log_event(state, f"harness retry 确认门已创建：{harness_run_id} -> {wr.get('id')}", kind="harness")
+        return {
+            "action": "request_retry",
+            "harness_run_id": harness_run_id,
+            "status": refreshed.get("status"),
+            "worker_request_id": wr.get("id"),
+            "approval_id": wr.get("approval_id"),
+            "old_worker_request_id": old_worker_request_id,
+            "dispatches_created": max(0, after_dispatches - before_dispatches),
+            "external_side_effects": [],
+            "note": "retry request created an approval gate only; approve it before any mailbox dispatch",
+        }, None
+
+    return None, "action 只能是 collect 或 request_retry"
+
+
 def _record_router_run(state, route):
     _harness_update_from_route(state, route)
     state.setdefault("router_runs", []).insert(0, route)
@@ -5831,6 +5942,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/task/assign": lambda s, p: assign_task(s, p),
             "/api/task/route": lambda s, p: route_task(s, p),
             "/api/harness/resolve": lambda s, p: resolve_harness_run(s, p),
+            "/api/harness/recover": lambda s, p: recover_harness_run(s, p),
             "/api/worker/launcher/request": lambda s, p: request_worker_launch(s, p),
             "/api/agent/orchestrate": lambda s, p: orchestrate_multi_agent(s, p),
             "/api/lingtai/dispatch": lambda s, p: dispatch_task_to_lingtai(s, p),
