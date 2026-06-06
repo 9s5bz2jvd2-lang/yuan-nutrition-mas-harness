@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "Yuan Nutrition MAS Harness v0.23",
+    "name": "Yuan Nutrition MAS Harness v0.24",
     "owner": "圆酱 / Runyuan",
     "localhost_only": true,
     "created_at": "2026-06-05T08:00:00-07:00",
@@ -130,6 +130,7 @@
   },
   "router_runs": [],
   "worker_requests": [],
+  "worker_launches": [],
   "cc_runs": [],
   "orchestrations": [],
   "insights": [],

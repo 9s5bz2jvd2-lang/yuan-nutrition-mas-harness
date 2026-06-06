@@ -74,3 +74,16 @@ Current prototype capabilities include:
 - Running as an unmanaged public SaaS.
 - Silently executing high-impact agent actions without approval.
 - Providing clinical diagnosis, medical treatment, or unreviewed nutrition prescriptions.
+
+
+## Current milestone: v0.24 GUI Worker Launcher
+
+Completed in this milestone:
+
+- GUI launch panel for daemon / Codex / Claude / avatar.
+- Approval-gated `worker_launch` records and previews.
+- Codex and Claude local read-only subprocess templates with redacted report files.
+- daemon dispatch through the real LingTai controller mailbox.
+- avatar same-network shallow spawn and `lingtai-agent run` startup path.
+
+Next hardening targets: richer report viewer, cancellation for long-running subprocesses, per-worker cost estimates, and clearer controller-side daemon templates.

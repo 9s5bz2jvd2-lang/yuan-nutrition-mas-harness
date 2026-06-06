@@ -60,7 +60,7 @@ python3 scripts/self_check.py
 Expected output:
 
 ```text
-OK Yuan Nutrition MAS Harness v0.23 self-check passed
+OK Yuan Nutrition MAS Harness v0.24 self-check passed
 ```
 
 The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies task/approval flows, v0.23 harness run protocol, scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including HARNESS_REPLY_JSON structured result parsing and WeChat-origin result aggregation. It also verifies `.secrets` is not readable through the memory endpoint.
@@ -132,3 +132,14 @@ Yuan Nutrition MAS Harness is released under the [MIT License](LICENSE).
 For public-source safety notes, read [SECURITY.md](SECURITY.md). For next development steps, read [ROADMAP.md](ROADMAP.md).
 
 Before sharing logs, screenshots, state files, or bug reports, scan and redact secrets. Before using nutrition or medical content with real users, keep human professional review in the loop.
+
+
+## 启动真实 worker（v0.24）
+
+1. 打开本地页面后点 **“真实 Worker 启动器”**。
+2. 选择 `daemon / Codex / Claude / avatar`，写清楚任务或 mission。
+3. Codex/Claude 需勾选费用确认；avatar 需填写合法名称并确认 mission。
+4. 提交后先进入 **确认队列**；批准后才会写 controller 邮箱、启动 CLI 子进程或创建 avatar。
+5. Codex/Claude 的输出会脱敏写入 `data/worker_launches/<launch_id>.md`，GUI 会显示 `report_path` 与预览。
+
+安全边界：不要在任务描述中粘贴 token/API key；daemon 由真实 LingTai controller 执行，Web 进程本身不直接持有 daemon 工具。

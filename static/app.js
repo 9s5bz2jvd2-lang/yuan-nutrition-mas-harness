@@ -1,4 +1,4 @@
-/* Yuan Nutrition MAS Harness v0.23 — 前端逻辑（纯原生 JS，无依赖） */
+/* Yuan Nutrition MAS Harness v0.24 — 前端逻辑（纯原生 JS，无依赖） */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -51,6 +51,8 @@ function statusTag(status) {
     "排队中": "busy", "执行中": "busy", "待确认": "waiting", "已确认": "done",
     "待派": "waiting", "已派发": "busy",
     "queued_to_lingtai_outbox": "busy", "reply_received": "done", "routing": "busy", "awaiting_approval": "waiting", "dispatched": "busy", "collecting": "busy", "needs_human": "waiting", "stuck": "stuck", "failed": "danger", "completed": "done",
+    "running": "busy", "timeout": "danger", "queued_subprocess": "busy", "queued_to_controller": "busy", "avatar_started": "done",
+    "可用": "done", "不可用": "paused",
     "sleep_signal_written": "paused", "suspend_signal_written": "paused", "interrupt_signal_written": "waiting", "clear_signal_written": "waiting",
   };
   return `<span class="tag ${map[status] || "idle"}">${esc(status)}</span>`;
@@ -75,6 +77,7 @@ function render() {
   renderTasks();
   renderWechat();
   renderHarness();
+  renderWorkerLauncher();
   renderLingTaiRuntime();
   renderLingTaiMemory();
   renderApprovals();
@@ -183,6 +186,37 @@ function renderHarness() {
       <div class="row-sub">来源：${esc(r.source || "")} · 回传：${esc(r.return_channel || "")} · route ${esc(r.route_id || "")}<br>${esc(r.input || "")}</div>
     </div>`).join("") : `<div class="empty">还没有 harness run。微信/GUI 任务进入 Task Router 后会自动生成。</div>`;
   el.innerHTML = banner + rows;
+}
+
+
+function renderWorkerLauncher() {
+  const el = $("#worker-launcher");
+  if (!el) return;
+  const launchers = (CATALOG && CATALOG.worker_launchers) || {};
+  const launches = STATE.worker_launches || [];
+  const launcherRows = ["daemon", "codex", "claude", "avatar"].map(k => {
+    const l = launchers[k] || {};
+    const label = { daemon: "daemon 分神", codex: "Codex CLI", claude: "Claude CLI", avatar: "真实 avatar" }[k] || k;
+    return `<div class="mini-row"><b>${esc(label)}</b> ${statusTag(l.available ? "可用" : "不可用")}<br><span class="muted">${esc(l.mode || "")}${l.path ? " · " + esc(l.path) : ""}</span><br><span class="muted">${esc(l.safety || "")}</span></div>`;
+  }).join("");
+  const rows = launches.length ? launches.slice(0, 8).map(w => `
+    <div class="row">
+      <div class="row-top"><span class="row-title">🚀 ${esc(w.label || w.kind || "worker")} · ${esc(w.id)}</span>${statusTag(w.status || "awaiting_approval")}</div>
+      <div class="row-sub">
+        approval ${esc(w.approval_id || "")} · controller ${esc(w.controller || "")} · ${esc(w.created_at || "")}<br>
+        ${w.avatar_name ? "avatar " + esc(w.avatar_name) + "<br>" : ""}${esc(w.description || "")}
+        ${w.report_path ? "<br>报告：" + esc(w.report_path) : ""}
+        ${w.output_preview ? "<br><span class=\"muted\">输出预览：</span>" + esc(w.output_preview) : ""}
+        ${w.error ? "<br>错误：" + esc(w.error) : ""}
+      </div>
+    </div>`).join("") : `<div class="empty">还没有 GUI 真实 worker 启动记录。点击“启动 worker”后会先进入确认队列。</div>`;
+  el.innerHTML = `<div class="preview">v0.24：GUI 可以创建真实 worker 启动请求；所有请求先入确认队列。Codex/Claude 以本机只读子进程运行并写报告；daemon 走真实 LingTai controller 邮箱；avatar 创建同网 shallow agent。</div>
+    <div class="row-actions">
+      <button class="btn small ok" onclick="openWorkerLauncherModal()">启动 worker</button>
+      <button class="btn small" onclick="refreshWorkerLauncherStatus()">刷新可用性</button>
+    </div>
+    ${launcherRows}
+    <h4>最近启动记录</h4>${rows}`;
 }
 
 function renderLingTaiRuntime() {
@@ -1117,6 +1151,81 @@ async function openHarnessModal() {
   `);
 }
 
+
+async function refreshWorkerLauncherStatus() {
+  const res = await fetch("/api/worker/launcher/status");
+  const data = await res.json();
+  if (data.launchers) {
+    CATALOG = CATALOG || {};
+    CATALOG.worker_launchers = data.launchers;
+  }
+  await refresh();
+  toast("已刷新 worker launcher 可用性");
+}
+
+async function openWorkerLauncherModal() {
+  const res = await fetch("/api/worker/launcher/status");
+  const data = await res.json();
+  if (data.launchers) {
+    CATALOG = CATALOG || {};
+    CATALOG.worker_launchers = data.launchers;
+  }
+  const launchers = data.launchers || {};
+  const opts = ["daemon", "codex", "claude", "avatar"].map(k => {
+    const l = launchers[k] || {};
+    const label = { daemon: "daemon（交给真实 controller 调 daemon 工具）", codex: "Codex CLI（只读 sandbox）", claude: "Claude CLI（plan / Read,Grep,Glob）", avatar: "avatar（创建同网 shallow agent）" }[k] || k;
+    return `<option value="${k}" ${l.available ? "" : "disabled"}>${esc(label)}${l.available ? "" : "（当前不可用）"}</option>`;
+  }).join("");
+  const statusRows = Object.entries(launchers).map(([k, l]) => `
+    <div class="mini-row"><b>${esc(k)}</b> ${statusTag(l.available ? "可用" : "不可用")}<br><span class="muted">${esc(l.mode || "")}</span><br><span class="muted">${esc(l.safety || "")}</span></div>`).join("");
+  openModal("🚀 真实 Worker 启动器", `
+    <div class="preview">所有 worker 启动都会先进入确认队列；不会绕过 approval。任务描述疑似包含 token/API key 会被拒绝。Codex/Claude 可能产生模型费用；daemon/avatar 会占用真实 LingTai 资源。</div>
+    ${statusRows}
+    <label>Worker 类型</label>
+    <select id="wl-kind" onchange="onWorkerKindChange()">${opts}</select>
+    <label>任务 / mission</label>
+    <textarea id="wl-desc" placeholder="例如：只读检查 README/ROADMAP 是否准确，并输出风险与下一步；不要修改文件。"></textarea>
+    <label>Controller（daemon 可选；默认使用当前配置）</label>
+    <input id="wl-controller" placeholder="例如：mimo-2-5-pro" />
+    <div id="wl-avatar-box" class="hidden">
+      <label>Avatar 名称（字母/数字/下划线/连字符，单段）</label>
+      <input id="wl-avatar-name" placeholder="例如：nutrition_worker_01" />
+      <label><input id="wl-confirm-mission" type="checkbox" /> 我确认这是长期/独立 avatar mission，不是随手测试。</label>
+    </div>
+    <label><input id="wl-confirm-cost" type="checkbox" /> 我确认 Codex / Claude 可能产生模型费用，并接受只读受控启动。</label>
+    <button class="btn primary" onclick="submitWorkerLaunch()">创建启动请求（先入确认队列）</button>
+  `);
+  onWorkerKindChange();
+}
+
+function onWorkerKindChange() {
+  const kind = document.getElementById('wl-kind')?.value || '';
+  const avatarBox = document.getElementById('wl-avatar-box');
+  if (avatarBox) avatarBox.classList.toggle('hidden', kind !== 'avatar');
+}
+
+async function submitWorkerLaunch() {
+  const kind = document.getElementById('wl-kind').value;
+  const payload = {
+    kind,
+    description: document.getElementById('wl-desc').value,
+    controller: document.getElementById('wl-controller').value,
+    avatar_name: document.getElementById('wl-avatar-name')?.value || "",
+    confirm_cost: !!document.getElementById('wl-confirm-cost')?.checked,
+    confirm_mission: !!document.getElementById('wl-confirm-mission')?.checked,
+  };
+  if (!payload.description.trim()) return toast("请先写清楚任务 / mission");
+  const r = await api('/api/worker/launcher/request', payload);
+  if (r.ok) {
+    toast("worker 启动请求已进入确认队列");
+    closeModal();
+    render();
+  } else {
+    toast(r.error || "创建 worker 启动请求失败");
+    render();
+  }
+}
+
 async function openArchitectureModal() {
   const res = await fetch("/api/architecture/status");
   const a = await res.json();
@@ -1156,6 +1265,7 @@ const ACTIONS = {
   "insight": openInsightModal,
   "soul": openSoulModal,
   "harness": openHarnessModal,
+  "worker-launcher": openWorkerLauncherModal,
   "lingtai-runtime": () => openLingTaiRuntimeModal(),
   "lingtai-memory": openLingTaiMemoryModal,
   "wechat": openWechatModal,
@@ -1207,6 +1317,10 @@ window.agentAction = agentAction;
 window.approval = approval;
 window.openCostModal = openCostModal;
 window.openHarnessModal = openHarnessModal;
+window.openWorkerLauncherModal = openWorkerLauncherModal;
+window.refreshWorkerLauncherStatus = refreshWorkerLauncherStatus;
+window.onWorkerKindChange = onWorkerKindChange;
+window.submitWorkerLaunch = submitWorkerLaunch;
 window.saveCostPolicy = saveCostPolicy;
 window.quickAssign = quickAssign;
 window.submitNewAgent = submitNewAgent;

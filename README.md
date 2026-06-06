@@ -1,8 +1,20 @@
-# Yuan Nutrition MAS Harness v0.23
+# Yuan Nutrition MAS Harness v0.24
 
 **Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan on top of [LingTai](https://github.com/Lingtai-AI/lingtai). It is designed to make lightweight agent orchestration, API management, safety approvals, rollback, and structured task handoff easier for nutrition professionals and nutrition-AI workflows.
 
-This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.23 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, and scoped approval grants. It adds the **Harness Run Protocol**: every input records route, approval, dispatch, worker_request, structured_result, and return-channel state; controller/worker replies must include `HARNESS_REPLY_JSON` so summary, artifacts, next_action, and external_side_effects can be collected automatically.
+This is not a shell or a button-only GUI. It is a runnable **lightweight LingTai harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the real WeChat MCP bridge entry, LingTai internal mailbox dispatch/collection, read-only memory/skill indexes, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, and the **GUI Worker Launcher**. Every worker launch is approval-gated: Codex/Claude run as local read-only CLI subprocesses with redacted reports, daemon requests are written to the real LingTai controller mailbox, and avatar launches create same-network shallow agents.
+
+
+## v0.24: GUI Worker Launcher
+
+The GUI can now create real worker-launch requests for four worker bodies, all behind the approval queue:
+
+- **daemon**: writes a real LingTai controller-mailbox dispatch; the controller agent is responsible for using the daemon tool and returning `HARNESS_REPLY_JSON`.
+- **Codex**: starts local `codex exec --sandbox read-only` and writes a redacted Markdown report under `data/worker_launches/`.
+- **Claude**: starts local `claude --print --permission-mode plan` with only `Read,Grep,Glob` allowed and `Bash/Edit/Write` disallowed.
+- **avatar**: creates a real same-network shallow avatar and starts `lingtai-agent run` after approval.
+
+Honest boundary: this is still local-first and approval-gated. Codex/Claude may incur model cost; avatar creates local `.lingtai` agent files; daemon is not executed directly by the web process but by the real LingTai controller workflow.
 
 ## Open source status
 
@@ -29,7 +41,7 @@ curl http://127.0.0.1:8765/api/harness/status
 - controller 邮件正文要求回信包含 `HARNESS_REPLY_JSON` fenced JSON，字段为 `worker_request_id / harness_run_id / status / summary / artifacts / next_action / external_side_effects`。
 - `/api/lingtai/collect` 会解析结构化回信，把 `worker_request`、`harness_run`、`task` 与 WeChat outbox 同步更新为 `completed / needs_human / stuck / failed` 等状态。
 
-诚实边界：v0.23 仍不由 Simple 本地服务直接启动 daemon/Codex/Claude/avatar，也不启动第二个微信 poller；它做的是“轻量灵台 harness 的可审计调度协议 + controller mailbox + 结构化回收”。
+诚实边界：v0.24 已能从 GUI 真正启动 Codex/Claude 只读本机子进程和真实 avatar；daemon 仍由 Simple 写入真实 controller mailbox 后交给 controller 使用 daemon 工具执行。它仍不启动第二个微信 poller，也不绕过确认队列。
 
 ## v0.23：架构验收表（不许糊弄）
 

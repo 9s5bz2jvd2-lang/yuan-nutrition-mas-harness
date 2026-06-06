@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Yuan Nutrition MAS Harness v0.23 — 本地原型服务器
+Yuan Nutrition MAS Harness v0.24 — 本地原型服务器
 
 边界（硬红线）：
 - 默认 localhost-only（绑定 127.0.0.1）。
@@ -50,6 +50,7 @@ STATE_PATH = os.path.join(DATA_DIR, "state.json")
 EXAMPLE_STATE_PATH = os.path.join(DATA_DIR, "state.example.json")
 SHOUGONG_DIR = os.path.join(DATA_DIR, "shougong")
 CC_RUN_DIR = os.path.join(DATA_DIR, "cc_runs")
+WORKER_LAUNCH_DIR = os.path.join(DATA_DIR, "worker_launches")
 CC_WORKTREE_DIR = os.path.join(tempfile.gettempdir(), "lingtai-simple-cc-worktrees")
 
 HOST = os.environ.get("LINGTAI_SIMPLE_HOST", "127.0.0.1")
@@ -63,7 +64,7 @@ SENSITIVE_ACTIONS = {
     "code_commit", "code_pr", "code_merge",
     "rollback_apply", "delete_agent", "file_delete", "high_cost_api", "sensitive_task",
     "lingtai_lifecycle", "lingtai_avatar_spawn", "lingtai_avatar_retire",
-    "worker_dispatch",
+    "worker_dispatch", "worker_launch",
 }
 
 # v0.23 scoped approval grants: only bounded, repeatable, non-destructive actions may be
@@ -1152,7 +1153,7 @@ def parse_level(value, default=1):
 def default_state():
     return {
         "meta": {
-            "name": "Yuan Nutrition MAS Harness v0.23",
+            "name": "Yuan Nutrition MAS Harness v0.24",
             "owner": "圆酱 / Runyuan",
             "localhost_only": True,
             "created_at": now_iso(),
@@ -1189,6 +1190,7 @@ def default_state():
         },
         "router_runs": [],     # v0.23 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
         "worker_requests": [],  # v0.23 受控 worker 调度：daemon/Codex/Claude/avatar handoff -> approval -> real LingTai mailbox -> result collection
+        "worker_launches": [],   # v0.24 GUI-triggered real worker launches: Codex/Claude local subprocess, daemon/controller dispatch, avatar spawn approval
         "cc_runs": [],          # Claude Code 运行记录（v0.23 真实接入 L1/L2/L3/L4/L5，并新增多 agent/洞察/心流本地回环）
         "orchestrations": [],   # 多 agent / 子灵编排批次（真实本地状态，不伪装外部执行）
         "insights": [],         # 洞察记录：由当前任务/风险/卡点生成的本地分析
@@ -1247,7 +1249,7 @@ def normalize_state(state):
     """兼容旧版本 state.json：补齐 v0.23 新字段，避免升级后丢状态。"""
     base = default_state()
     state.setdefault("meta", base["meta"])
-    state["meta"]["name"] = "Yuan Nutrition MAS Harness v0.23"
+    state["meta"]["name"] = "Yuan Nutrition MAS Harness v0.24"
     state["meta"]["max_agents"] = MAX_AGENTS
     state.setdefault("agents", [])
     state.setdefault("tasks", [])
@@ -1267,6 +1269,7 @@ def normalize_state(state):
     state["wechat_bridge"].setdefault("mark_sent_endpoint", "/api/wechat/bridge/mark_sent")
     state.setdefault("router_runs", [])
     state.setdefault("worker_requests", [])
+    state.setdefault("worker_launches", [])
     state.setdefault("cc_runs", [])
     state.setdefault("orchestrations", [])
     state.setdefault("insights", [])
@@ -1918,6 +1921,237 @@ def worker_request_apply_real(state, ap):
         ag["status"] = "正在干"
     log_event(state, f"受控 worker 调度已写入真实内部邮箱：{worker_request_id} → {controller}", kind="worker")
     return {"worker_request_id": worker_request_id, "mailbox_id": result.get("mailbox_id"), "controller": controller}, None
+
+
+def worker_launcher_status(state=None):
+    """Read-only status for GUI real worker launcher."""
+    state = state or {}
+    return {
+        "ok": True,
+        "version": "v0.24-worker-launcher",
+        "launchers": {
+            "daemon": {
+                "available": _lingtai_network_path() is not None,
+                "mode": "approval -> real LingTai controller mailbox -> daemon tool",
+                "safety": "No second WeChat poller; controller must return HARNESS_REPLY_JSON.",
+            },
+            "codex": {
+                "available": shutil.which("codex") is not None,
+                "path": shutil.which("codex") or "",
+                "mode": "local subprocess: codex exec --sandbox read-only",
+                "safety": "Read-only sandbox by default; stdout/stderr are redacted and written to data/worker_launches.",
+            },
+            "claude": {
+                "available": shutil.which("claude") is not None,
+                "path": shutil.which("claude") or "",
+                "mode": "local subprocess: claude --print --permission-mode plan",
+                "safety": "Read/Grep/Glob only; Bash/Edit/Write are disallowed.",
+            },
+            "avatar": {
+                "available": _lingtai_network_path() is not None and os.path.exists(LINGTAI_AGENT_CMD),
+                "mode": "approval -> create same-network shallow avatar -> lingtai-agent run",
+                "safety": "Requires a real mission and a unique safe avatar name.",
+            },
+        },
+        "recent_launches": (state or {}).get("worker_launches", [])[:20],
+    }
+
+
+def _worker_launch_by_id(state, launch_id):
+    for item in state.setdefault("worker_launches", []):
+        if item.get("id") == launch_id:
+            return item
+    return None
+
+
+def _safe_worker_kind(kind):
+    kind = (kind or "").strip().lower()
+    return kind if kind in ("daemon", "codex", "claude", "avatar") else ""
+
+
+def request_worker_launch(state, payload):
+    """GUI entry: create one approval-gated real worker launch request."""
+    kind = _safe_worker_kind(payload.get("kind") or payload.get("worker_kind"))
+    desc = (payload.get("description") or payload.get("task") or payload.get("message") or "").strip()
+    if not kind:
+        return None, "请选择 worker 类型：daemon / codex / claude / avatar。"
+    if not desc:
+        return None, "请先写清楚要让 worker 做什么。"
+    if _looks_like_secret(desc):
+        return None, "任务描述疑似包含 API key / token；为安全起见拒绝启动 worker，请先删除凭证。"
+    if kind in ("codex", "claude") and not payload.get("confirm_cost"):
+        return None, "Codex / Claude 会调用外部模型，可能产生费用；请勾选费用确认。"
+    if kind == "codex" and shutil.which("codex") is None:
+        return None, "本机找不到 codex CLI，无法启动 Codex worker。"
+    if kind == "claude" and shutil.which("claude") is None:
+        return None, "本机找不到 claude CLI，无法启动 Claude worker。"
+    if kind == "daemon" and _lingtai_network_path() is None:
+        return None, "找不到 .lingtai 网络目录，无法把 daemon 请求交给真实 controller。"
+    avatar_name = _safe_avatar_name(payload.get("avatar_name") or payload.get("name") or "")
+    if kind == "avatar":
+        if not avatar_name:
+            return None, "启动 avatar 需要填写合法 avatar 名称（字母/数字/下划线/连字符，单段）。"
+        if _mission_looks_too_short(desc) and not payload.get("confirm_mission"):
+            return None, "avatar mission 太短；请写清楚长期职责，并勾选 mission 确认。"
+        if _lingtai_network_path() is None or not os.path.exists(LINGTAI_AGENT_CMD):
+            return None, "找不到 .lingtai 网络或 lingtai-agent 命令，无法创建真实 avatar。"
+    launch = {
+        "id": new_id("wlaunch"),
+        "kind": kind,
+        "label": _worker_kind_label(kind),
+        "description": redact(desc),
+        "status": "awaiting_approval",
+        "created_at": now_iso(),
+        "started_at": "",
+        "finished_at": "",
+        "exit_code": None,
+        "duration_ms": None,
+        "report_path": "",
+        "output_preview": "",
+        "error": "",
+        "approval_id": "",
+        "avatar_name": avatar_name,
+        "controller": _safe_lingtai_address(payload.get("controller") or LINGTAI_WORKER_CONTROLLER) or LINGTAI_WORKER_CONTROLLER,
+        "external_side_effects": [],
+    }
+    state.setdefault("worker_launches", []).insert(0, launch)
+    state["worker_launches"] = state["worker_launches"][:80]
+    detail = (
+        f"worker 类型：{launch['label']}\n"
+        f"launch_id：{launch['id']}\n"
+        f"任务内容：{desc}\n\n"
+        "确认后会发生：\n"
+        "- daemon：写入真实 LingTai controller 内部邮箱，由 controller 使用 daemon 工具执行并回收；\n"
+        "- Codex：启动本机 codex exec --sandbox read-only 子进程，报告写入 data/worker_launches；\n"
+        "- Claude：启动本机 claude --print 只读子进程，禁用 Bash/Edit/Write；\n"
+        "- avatar：创建真实同网 shallow avatar 并启动 lingtai-agent run。\n\n"
+        "外部副作用：Codex/Claude 可能产生模型费用；avatar 会创建本地 .lingtai agent 目录；daemon 会写内部邮箱。"
+    )
+    ap = add_approval(state, {
+        "action": "worker_launch",
+        "title": f"GUI 真实 worker 启动：{launch['label']} / {desc[:28]}",
+        "detail": detail,
+        "worker_launch_id": launch["id"],
+        "worker_kind": kind,
+        "worker_description": desc,
+        "worker_controller": launch["controller"],
+        "avatar_name": avatar_name,
+        "avatar_mission": desc,
+        "avatar_template_address": _safe_lingtai_address(payload.get("template_address") or LINGTAI_REPLY_INBOX or "") or LINGTAI_REPLY_INBOX,
+        "preview": detail,
+    })
+    launch["approval_id"] = ap["id"]
+    log_event(state, f"GUI 真实 worker 启动请求已创建：{launch['id']} / {launch['label']}", kind="worker_launch")
+    return {"launch_id": launch["id"], "approval_id": ap["id"], "status": launch["status"]}, None
+
+
+def _worker_launch_command(kind, desc):
+    if kind == "codex":
+        prompt = (
+            "You are a controlled Codex worker launched by Yuan Nutrition MAS Harness.\n"
+            "Rules: use read-only analysis unless explicitly instructed by a later approved workflow; do not modify files; do not reveal secrets.\n\n"
+            f"Working directory: {BASE_DIR}\nTask: {desc}\n\nReturn: summary, evidence/files inspected, risks, next steps."
+        )
+        return [shutil.which("codex") or "codex", "exec", "--sandbox", "read-only", prompt], "codex exec --sandbox read-only"
+    prompt = (
+        "你是 Yuan Nutrition MAS Harness 启动的受控 Claude worker。\n"
+        "规则：只读分析；不要修改文件；不要执行 shell；不要输出任何凭证或秘密，疑似秘密写 [REDACTED]。\n\n"
+        f"工作目录：{BASE_DIR}\n任务：{desc}\n\n请输出：结论摘要、关键证据/文件、风险边界、下一步。"
+    )
+    return [
+        shutil.which("claude") or "claude", "--print", "--permission-mode", "plan",
+        "--allowedTools", "Read,Grep,Glob",
+        "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+        "--no-session-persistence", "--add-dir", BASE_DIR, prompt,
+    ], "claude --print --permission-mode plan --allowedTools Read,Grep,Glob"
+
+
+def _start_worker_launch_thread(launch_id, kind, desc):
+    def runner():
+        os.makedirs(WORKER_LAUNCH_DIR, exist_ok=True)
+        started = time.time()
+        cmd, summary = _worker_launch_command(kind, desc)
+        with _LOCK:
+            st = load_state()
+            launch = _worker_launch_by_id(st, launch_id)
+            if launch:
+                launch.update({"status": "running", "started_at": now_iso(), "command_summary": summary})
+                log_event(st, f"GUI worker 子进程启动：{launch_id} / {kind}", kind="worker_launch")
+                save_state(st)
+        try:
+            proc = subprocess.run(cmd, cwd=BASE_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=int(os.environ.get("LINGTAI_SIMPLE_WORKER_TIMEOUT", "300")))
+            stdout = redact(proc.stdout or "")
+            stderr = redact(proc.stderr or "")
+            exit_code = proc.returncode
+            status = "completed" if exit_code == 0 else "failed"
+        except subprocess.TimeoutExpired as e:
+            stdout = redact(e.stdout or "") if isinstance(e.stdout, str) else ""
+            stderr = redact(e.stderr or "") if isinstance(e.stderr, str) else ""
+            stderr = (stderr + "\nTIMEOUT").strip()
+            exit_code = 124
+            status = "timeout"
+        duration_ms = int((time.time() - started) * 1000)
+        combined = (stdout.strip() + ("\n\n[stderr]\n" + stderr.strip() if stderr.strip() else "")).strip() or "（worker 没有返回可显示内容。）"
+        report_path = os.path.join(WORKER_LAUNCH_DIR, f"{launch_id}.md")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"# Worker Launch Report\n\n- launch_id: `{launch_id}`\n- kind: {kind}\n- status: {status}\n- exit_code: {exit_code}\n- duration_ms: {duration_ms}\n- command: {summary}\n\n## Task\n\n{redact(desc)}\n\n## Output\n\n{combined}\n")
+        with _LOCK:
+            st = load_state()
+            launch = _worker_launch_by_id(st, launch_id)
+            if launch:
+                launch.update({
+                    "status": status, "finished_at": now_iso(), "exit_code": exit_code,
+                    "duration_ms": duration_ms, "report_path": report_path,
+                    "output_preview": _bounded(combined, 2400),
+                    "external_side_effects": ["model_cli_call_may_cost_money"],
+                })
+                log_event(st, f"GUI worker 子进程结束：{launch_id} / {kind} / {status}", kind="worker_launch")
+                save_state(st)
+    threading.Thread(target=runner, name=f"worker-launch-{launch_id}", daemon=True).start()
+
+
+def worker_launch_apply_real(state, ap):
+    launch_id = ap.get("worker_launch_id") or ""
+    launch = _worker_launch_by_id(state, launch_id)
+    if not launch:
+        return None, "找不到 worker_launch；拒绝执行"
+    if launch.get("status") not in ("awaiting_approval", "failed", "timeout"):
+        return None, f"worker_launch 当前状态为 {launch.get('status')}，不能重复启动"
+    kind = _safe_worker_kind(ap.get("worker_kind") or launch.get("kind"))
+    desc = ap.get("worker_description") or launch.get("description") or ""
+    if kind == "daemon":
+        wr, err = create_controlled_worker_request(state, {
+            "worker_kind": "daemon", "description": desc, "source": "gui_worker_launcher",
+            "controller": ap.get("worker_controller") or launch.get("controller"),
+        })
+        if err:
+            return None, err
+        fake_ap = {
+            "worker_request_id": wr["id"], "worker_controller": wr.get("controller"),
+            "worker_description": desc, "worker_kind": "daemon",
+            "worker_harness_run_id": wr.get("harness_run_id", ""),
+            "task_id": wr.get("task_id"), "agent_id": wr.get("agent_id"),
+        }
+        result, err = worker_request_apply_real(state, fake_ap)
+        if err:
+            return None, err
+        launch.update({"status": "dispatched_to_controller", "started_at": now_iso(), "worker_request_id": wr["id"], "mailbox_id": result.get("mailbox_id"), "external_side_effects": ["lingtai_internal_mail_written"]})
+        return {"launch_id": launch_id, "worker_request_id": wr["id"], "mailbox_id": result.get("mailbox_id")}, None
+    if kind == "avatar":
+        avatar_ap = dict(ap)
+        avatar_ap["avatar_name"] = ap.get("avatar_name") or launch.get("avatar_name")
+        avatar_ap["avatar_mission"] = desc
+        avatar_ap["avatar_template_address"] = ap.get("avatar_template_address") or LINGTAI_REPLY_INBOX
+        result, err = lingtai_avatar_spawn_apply_real(state, avatar_ap)
+        if err:
+            return None, err
+        launch.update({"status": "avatar_started", "started_at": now_iso(), "finished_at": now_iso(), "result": result, "external_side_effects": ["created_lingtai_avatar_directory", "started_lingtai_agent_process"]})
+        return {"launch_id": launch_id, "avatar": result}, None
+    if kind not in ("codex", "claude"):
+        return None, "未知 worker 类型"
+    launch.update({"status": "queued_subprocess", "started_at": now_iso()})
+    _start_worker_launch_thread(launch_id, kind, desc)
+    return {"launch_id": launch_id, "status": "queued_subprocess", "note": "子进程已在后台启动；刷新 GUI 查看 report_path / output_preview。"}, None
 
 
 def _parse_harness_reply(message):
@@ -2682,7 +2916,7 @@ def _build_approval_record(payload, action=None):
         "agent_id": payload.get("agent_id"),
     }
     # 部分真实动作需要保留经过验证的机器字段，供确认后执行。不要放明文 secret。
-    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id", "cost_kind", "cost_provider_id", "cost_task_id", "cost_estimated_usd", "cost_cap_usd", "cost_reason", "worker_request_id", "worker_kind", "worker_controller", "worker_description", "worker_route_id", "worker_inbound_id", "worker_user_id", "worker_reply_to_message_id", "worker_harness_run_id"):
+    for k in ("rollback_ref", "rollback_commit", "snapshot_id", "commit_message", "commit_safety_ref", "github_repo", "github_base_branch", "github_head_branch", "github_head_commit", "github_pr_title", "github_pr_body", "github_pr_number", "github_pr_url", "github_merge_method", "lingtai_action", "lingtai_address", "avatar_name", "avatar_type", "avatar_mission", "avatar_comment", "avatar_template_address", "avatar_retire_action", "avatar_retire_note", "local_agent_id", "cost_kind", "cost_provider_id", "cost_task_id", "cost_estimated_usd", "cost_cap_usd", "cost_reason", "worker_request_id", "worker_launch_id", "worker_kind", "worker_controller", "worker_description", "worker_route_id", "worker_inbound_id", "worker_user_id", "worker_reply_to_message_id", "worker_harness_run_id"):
         if payload.get(k):
             ap[k] = str(payload.get(k))
     if payload.get("commit_changed_files"):
@@ -2730,6 +2964,7 @@ def build_preview(action, payload):
         "high_cost_api": f"[高成本 API 预览 / 不会真实调用]\n{detail}",
         "budget_override": f"[预算/成本越线预览 / 确认后给该类动作一次短时放行；不会自动发起外部调用]\n{detail}",
         "worker_dispatch": f"[受控 worker 调度预览 / 确认后会写入真实 LingTai 内部邮箱，请主控 agent 执行 daemon/Codex/Claude/avatar 类工作并回信；不启动第二微信 poller，不绕过确认闸]\n{detail}",
+        "worker_launch": f"[GUI 真实 worker 启动预览 / 确认后会启动本机 Codex/Claude 子进程，或创建真实 daemon/avatar handoff；输出写入本地报告并脱敏回收]\n{detail}",
     }
     return previews.get(action, f"[预览]\n{detail}")
 
@@ -2847,6 +3082,12 @@ def _apply_approved_action(state, ap):
         return None
     if action == "worker_dispatch":
         result, err = worker_request_apply_real(state, ap)
+        if err:
+            return err
+        ap["result"] = result
+        return None
+    if action == "worker_launch":
+        result, err = worker_launch_apply_real(state, ap)
         if err:
             return err
         ap["result"] = result
@@ -3173,7 +3414,7 @@ def harness_status(state):
     active_status = {"routing", "awaiting_approval", "dispatched", "collecting", "needs_human", "stuck"}
     return {
         "ok": True,
-        "version": "v0.23",
+        "version": "v0.24",
         "harness": state.setdefault("harness", default_state()["harness"]),
         "counts": {
             "total_runs": len(runs),
@@ -3448,7 +3689,7 @@ def _bridge_status_text(state):
     active = [t for t in state.get("tasks", []) if t.get("status") in ("排队中", "执行中", "等确认")]
     agents = state.get("agents", [])
     lines = [
-        "圆酱，Yuan Nutrition MAS Harness v0.23 当前状态：",
+        "圆酱，Yuan Nutrition MAS Harness v0.24 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
         "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
@@ -3638,7 +3879,7 @@ def generate_shougong(state):
     lines = []
     lines.append(f"# 收功单 / Shougong — {now_iso()}")
     lines.append("")
-    lines.append("> Yuan Nutrition MAS Harness v0.23（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
+    lines.append("> Yuan Nutrition MAS Harness v0.24（本地原型 / Keychain、模型 API、git Time Machine、微信桥接入口、Claude Code L1-L5、多 agent 本地编排、洞察、心流、真实 LingTai 内部邮箱派发、回复回收、生命周期、avatar spawn/绑定/退休已接入）")
     lines.append("")
     lines.append("## ✅ 已完成")
     if done:
@@ -4757,7 +4998,7 @@ def load_demo_state(_state=None, _payload=None):
             demo = json.load(f)
     except OSError:
         demo = default_state()
-    demo["meta"]["name"] = "Yuan Nutrition MAS Harness v0.23（示例模式）"
+    demo["meta"]["name"] = "Yuan Nutrition MAS Harness v0.24（示例模式）"
     demo["meta"]["loaded_demo_at"] = now_iso()
     demo.setdefault("log", [])
     log_event(demo, "加载示例数据：圆酱专属灵台 v0.23 demo")
@@ -5024,9 +5265,9 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "长期助手、临时分析、代码苦力三类工作体；界面不暴露复杂术语；Claude/Codex 权限分级。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:204-216",
         "status": "partial",
-        "evidence": "UI 使用“灵/多 agent/代码苦力”等普通说法；真实 shallow avatar spawn/bind/retire；Claude Code L1-L5 已接入不同权限和确认闸；Task Router 可创建受控 worker 请求交给 controller agent；v0.23 要求 controller 用 HARNESS_REPLY_JSON 结构化回信。",
-        "gap": "daemon/Codex/Claude/avatar 类 worker 可从 Simple Task Router 发起受控调度请求并写 controller mailbox，且可结构化回收；但 Simple 本身仍不直接启动这些 worker，长期助手技能/模型权限仍未全量写入真实 agent 配置。",
-        "test": "python3 scripts/self_check.py；Claude Code 真实任务需本机 claude CLI 和显式确认。",
+        "evidence": "UI 使用“灵/多 agent/代码苦力/Worker 启动器”等普通说法；真实 shallow avatar spawn/bind/retire；Claude Code L1-L5 已接入不同权限和确认门；Task Router 可创建受控 worker 请求交给 controller agent；v0.23 要求 controller 用 HARNESS_REPLY_JSON 结构化回信。v0.24 新增 GUI 真实 Worker 启动器：Codex/Claude 以本机只读 CLI 子进程运行并写脱敏报告，daemon 仍走真实 LingTai controller 邮箱，avatar 走同网 shallow agent 创建并启动 lingtai-agent run；全部先入确认队列。",
+        "gap": "长期助手技能/模型权限仍未全量写入真实 resident agent init/preset；daemon 由 controller agent 执行 daemon 工具而非由本 Web 进程直接持有 daemon tool，这是刻意边界。",
+        "test": "python3 scripts/self_check.py；Claude/Codex 真实任务需本机 CLI 和显式费用确认。",
     },
     {
         "id": "A09",
@@ -5034,7 +5275,7 @@ ARCHITECTURE_ACCEPTANCE_ITEMS = [
         "requirement": "skills/knowledge/pad/molt/shougong 形成可续接记忆；长日志进文件，阶段摘要回主控；高密度协作主动生成已完成/未完成/下一步/风险/路径。",
         "source": "ARCHITECTURE_EXPERT_DISCUSSION.md:218-232",
         "status": "done",
-        "evidence": "v0.23 已实现真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
+        "evidence": "v0.24 保留真实 LingTai durable-store 只读索引（pad/knowledge/custom/shared skills/summaries）；/api/shougong 生成阶段成果、未竟事项、下一步、路径与风险。",
         "gap": "目前是只读索引与本地收功；写回 knowledge/skills/molt 仍交由真实 LingTai agent 流程，不由 Simple 直接修改。",
         "test": "python3 scripts/self_check.py（fake durable stores + read refusal for secrets）。",
     },
@@ -5068,7 +5309,7 @@ def architecture_acceptance_status():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     return {
         "ok": True,
-        "version": "v0.23",
+        "version": "v0.24",
         "source": "../ARCHITECTURE_EXPERT_DISCUSSION.md",
         "summary": {
             "total": len(ARCHITECTURE_ACCEPTANCE_ITEMS),
@@ -5097,6 +5338,8 @@ def health_check():
         "shougong_dir": os.path.isdir(SHOUGONG_DIR) or True,
         "git_available": _git_available(),
         "claude_code_available": claude_code_available(),
+        "codex_cli_available": shutil.which("codex") is not None,
+        "lingtai_agent_cmd_available": os.path.exists(LINGTAI_AGENT_CMD),
         "github_cli_available": shutil.which("gh") is not None,
         "lingtai_network_dir": _lingtai_network_path() is not None,
         "secret_vault_scan": secret_scan.get("ok", False),
@@ -5104,7 +5347,7 @@ def health_check():
     required_checks = ("localhost_only", "static_index", "static_app", "static_styles", "example_state", "state_dir", "secret_vault_scan")
     return {
         "ok": all(checks.get(k) for k in required_checks),
-        "version": "v0.23",
+        "version": "v0.24",
         "host": HOST,
         "port": PORT,
         "checks": checks,
@@ -5122,6 +5365,7 @@ def health_check():
             "real Claude Code L3 commit executor: confirmation-gated local git commit only",
             "real Claude Code L4 PR executor: confirmation-gated branch push + GitHub PR creation",
             "real Claude Code L5 merge executor: confirmation-gated GitHub PR merge",
+            "real GUI worker launcher: confirmation-gated Codex/Claude local subprocess launches, daemon controller dispatch, and avatar spawn handoff",
             "real local multi-agent orchestration: create/select child spirits, split objective, record task batch",
             "real local insight and soul-flow loops: deterministic state analysis, reflection records, WeChat commands",
             "real LingTai internal mailbox dispatch: Simple tasks can be queued to real agents via .lingtai/<sender>/mailbox/outbox",
@@ -5220,6 +5464,7 @@ class Handler(BaseHTTPRequestHandler):
                     "dir_mode": "0700",
                 },
                 "cost_policy": public_cost_policy(load_state()),
+                "worker_launchers": worker_launcher_status(load_state()).get("launchers", {}),
             })
         if route == "/api/cost/status":
             state = load_state()
@@ -5241,6 +5486,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/harness/status":
             state = load_state()
             return self._send_json(harness_status(state))
+        if route == "/api/worker/launcher/status":
+            state = load_state()
+            return self._send_json(worker_launcher_status(state))
         if route == "/api/lingtai/agents":
             return self._send_json({"agents": list_lingtai_agents(), "network_dir": LINGTAI_NETWORK_DIR})
         if route == "/api/lingtai/memory":
@@ -5370,6 +5618,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/agent/create": lambda s, p: create_agent(s, p),
             "/api/task/assign": lambda s, p: assign_task(s, p),
             "/api/task/route": lambda s, p: route_task(s, p),
+            "/api/worker/launcher/request": lambda s, p: request_worker_launch(s, p),
             "/api/agent/orchestrate": lambda s, p: orchestrate_multi_agent(s, p),
             "/api/lingtai/dispatch": lambda s, p: dispatch_task_to_lingtai(s, p),
             "/api/lingtai/collect": lambda s, p: collect_lingtai_mail_results(s, p),
@@ -5429,6 +5678,7 @@ class Handler(BaseHTTPRequestHandler):
             "wechat_bridge": state.get("wechat_bridge", {}),
             "router_runs": state.get("router_runs", [])[:30],
             "worker_requests": state.get("worker_requests", [])[:30],
+            "worker_launches": state.get("worker_launches", [])[:30],
             "lingtai_runtime": state.get("lingtai_runtime", {}),
             "lingtai_dispatches": state.get("lingtai_dispatches", [])[:30],
             "lingtai_mail_results": state.get("lingtai_mail_results", [])[:30],
@@ -5516,7 +5766,7 @@ def main():
     load_state()  # 确保 state.json 存在
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("=" * 64)
-    print("  Yuan Nutrition MAS Harness v0.23 — 本地原型")
+    print("  Yuan Nutrition MAS Harness v0.24 — 本地原型")
     print("=" * 64)
     print(f"  地址 : http://{HOST}:{PORT}/")
     print(f"  状态 : {STATE_PATH}")

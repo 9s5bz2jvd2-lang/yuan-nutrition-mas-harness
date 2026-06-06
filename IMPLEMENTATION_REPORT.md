@@ -1,4 +1,17 @@
-# Yuan Nutrition MAS Harness v0.23 Implementation Report
+# Yuan Nutrition MAS Harness v0.24 Implementation Report
+
+## v0.24 update — GUI Worker Launcher
+
+Implemented a real, approval-gated worker launcher in the GUI and backend:
+
+- `/api/worker/launcher/status` reports availability for daemon, Codex, Claude, and avatar launch modes.
+- `/api/worker/launcher/request` creates `worker_launch` records and approval items.
+- Approved daemon launches write a real LingTai controller-mailbox dispatch.
+- Approved Codex/Claude launches run local read-only CLI subprocesses and save redacted reports in `data/worker_launches/`.
+- Approved avatar launches create a same-network shallow avatar and start `lingtai-agent run`.
+
+Boundary retained: every launch requires approval; Codex/Claude are read-only by default; daemon execution remains delegated to the real LingTai controller rather than the local web server directly owning the daemon tool.
+
 
 
 ## v0.23 Update — Lightweight LingTai Harness Run Protocol
@@ -41,7 +54,7 @@ New / changed endpoints:
 Validation added:
 
 - `scripts/self_check.py` now verifies scoped approval grants, ordinary router tasks, router-triggered fake-network LingTai mailbox dispatch, WeChat default-route `route_id`, pending outbox retrieval, and mark-sent behavior.
-- Expected output: `OK Yuan Nutrition MAS Harness v0.23 self-check passed`.
+- Expected output: `OK Yuan Nutrition MAS Harness v0.24 self-check passed`.
 
 Honest boundary:
 
@@ -73,7 +86,7 @@ Safety boundary:
 Validation added:
 
 - `scripts/self_check.py` now builds an isolated fake LingTai agent with pad, knowledge, custom skill, shared skill, summary, and `.secrets`; verifies memory scan/read works and `.secrets` read is rejected.
-- Expected output: `OK Yuan Nutrition MAS Harness v0.23 self-check passed`.
+- Expected output: `OK Yuan Nutrition MAS Harness v0.24 self-check passed`.
 
 
 ## v0.17.1 Download-and-run packaging
@@ -144,7 +157,7 @@ python3 scripts/self_check.py
 Observed result:
 
 ```text
-OK Yuan Nutrition MAS Harness v0.23 self-check passed
+OK Yuan Nutrition MAS Harness v0.24 self-check passed
 ```
 
 ## Boundaries
