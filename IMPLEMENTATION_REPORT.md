@@ -1,5 +1,11 @@
 # Yuan Nutrition MAS Harness v0.24 Implementation Report
 
+## v0.24 follow-up — Harness Watchdog status
+
+`GET /api/harness/status` now includes a read-only watchdog layer for actual harness operations. Recent runs are returned with `last_activity_age_seconds`, `stale_dispatched`, `needs_attention`, and `recommended_action`; the top-level response also summarizes `needs_attention`, `stale_dispatched`, `oldest_active_age_seconds`, and `watchdog.attention_runs`. This helps a nutritionist-facing operator see whether a dispatched/controller run has not been collected for too long, whether an approval has been waiting, or whether a returned run needs human intervention.
+
+Boundary retained: the watchdog is observability only. It does not auto-retry, auto-send, approve, or call external tools.
+
 ## v0.24 update — GUI Worker Launcher
 
 Implemented a real, approval-gated worker launcher in the GUI and backend:
@@ -20,7 +26,7 @@ v0.23 responds to the correction that LingTai Simple is not a shell or GUI wrapp
 
 Controlled worker dispatch is now harness-aware. Worker requests carry `harness_run_id`; approval records keep `worker_harness_run_id`; approved controller mailbox messages require a `HARNESS_REPLY_JSON` fenced JSON payload with `worker_request_id`, `harness_run_id`, `status`, `summary`, `artifacts`, `next_action`, and `external_side_effects`. `/api/lingtai/collect` parses that structured result, normalizes statuses to `completed / needs_human / stuck / failed`, updates worker/task/harness state, and queues WeChat-origin summaries back into the existing no-second-poller outbox.
 
-New API: `GET /api/harness/status` returns harness mode, counts, recent runs, and the worker reply contract. Self-check now verifies ordinary route harness creation, worker harness linkage, controller mailbox body contract, structured fake controller reply parsing, and completed worker/harness state.
+New API: `GET /api/harness/status` returns harness mode, counts, recent runs, the worker reply contract, and watchdog fields for `needs_attention`, stale dispatched runs, activity age, and recommended actions. Self-check now verifies ordinary route harness creation, worker harness linkage, stale-dispatch watchdog detection, controller mailbox body contract, structured fake controller reply parsing, and completed worker/harness state.
 
 Honest boundary: Simple still does not directly start daemon/Codex/Claude/avatar workers and still does not run an autonomous WeChat poller. v0.23 is the auditable harness layer: intake, routing, approval, controller dispatch, structured collection, and return.
 

@@ -260,7 +260,33 @@ time.sleep(30)
         assert st_route.get('router_runs') and st_route['router_runs'][0]['id']==route_local['result']['id'], st_route.get('router_runs')
         hs0=req('/api/harness/status')
         assert hs0['ok'] and hs0['version']=='v0.24' and hs0['counts']['total_runs'] >= 1, hs0
+        assert 'watchdog' in hs0 and 'needs_attention' in hs0 and 'last_activity_age_seconds' in hs0, hs0
         assert st_route.get('harness_runs') and st_route['harness_runs'][0].get('protocol') and st_route['harness_runs'][0].get('route_id')==route_local['result']['id'], st_route.get('harness_runs')
+
+        # ---- v0.24 follow-up read-only Harness Watchdog：标出久未回收/需人工介入的 run，不产生外部副作用 ----
+        st_for_watch=json.loads(state.read_text(encoding='utf-8'))
+        stale_run={
+            'id':'harness_selfcheck_stale',
+            'created_at':'2000-01-01T00:00:00+00:00',
+            'updated_at':'2000-01-01T00:00:00+00:00',
+            'source':'self_check',
+            'return_channel':'ui',
+            'input':'self-check stale dispatched harness run',
+            'route_type':'lingtai_mailbox',
+            'status':'dispatched',
+            'protocol':'intake -> route -> approval -> dispatch -> collect -> return',
+            'stages':[{'name':'dispatch','status':'done','at':'2000-01-01T00:00:00+00:00'}],
+            'artifacts':[],
+            'risk_gates':[],
+        }
+        st_for_watch.setdefault('harness_runs', []).insert(0, stale_run)
+        state.write_text(json.dumps(st_for_watch, ensure_ascii=False, indent=2), encoding='utf-8')
+        hs_watch=req('/api/harness/status')
+        assert hs_watch['ok'] and hs_watch['needs_attention'] is True and hs_watch['stale_dispatched'] >= 1, hs_watch
+        watched=next((r for r in hs_watch['recent_runs'] if r.get('id')=='harness_selfcheck_stale'), None)
+        assert watched and watched['stale_dispatched'] is True and watched['needs_attention'] is True, hs_watch.get('recent_runs')
+        assert watched['recommended_action']=='run_collect_or_check_controller' and watched['last_activity_age_seconds'] >= hs_watch['watchdog']['stale_dispatch_seconds'], watched
+        assert any(r.get('id')=='harness_selfcheck_stale' for r in hs_watch['watchdog']['attention_runs']), hs_watch['watchdog']
         route_need_confirm=req('/api/task/route', {'text':'派发 worker-one 自检路由：需要先确认再写真实邮箱', 'source':'self_check'})
         assert route_need_confirm['ok'] and route_need_confirm['result']['route_type']=='lingtai_mailbox' and route_need_confirm['result']['status']=='needs_confirm_dispatch', route_need_confirm
         route_disp=req('/api/task/route', {'text':'派发 worker-one 自检路由：确认后写入真实 fake outbox', 'source':'self_check', 'confirm_dispatch': True})

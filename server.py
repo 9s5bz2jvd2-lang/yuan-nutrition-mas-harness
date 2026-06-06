@@ -3409,20 +3409,95 @@ def _harness_update_from_route(state, route):
     return run
 
 
+def _harness_age_seconds(run, now=None):
+    now = now or datetime.now(timezone.utc)
+    updated = _parse_iso(run.get("updated_at") or run.get("created_at"))
+    if not updated:
+        return None
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return max(0, int((now - updated.astimezone(timezone.utc)).total_seconds()))
+
+
+def _harness_watch_item(run, *, now, stale_dispatch_seconds, stale_approval_seconds):
+    status = run.get("status") or "unknown"
+    age = _harness_age_seconds(run, now=now)
+    stale_dispatched = status in ("dispatched", "collecting") and age is not None and age >= stale_dispatch_seconds
+    stale_approval = status == "awaiting_approval" and age is not None and age >= stale_approval_seconds
+    needs_attention = status in ("needs_human", "stuck", "failed") or stale_dispatched or stale_approval
+    if stale_dispatched:
+        recommended_action = "run_collect_or_check_controller"
+    elif stale_approval:
+        recommended_action = "review_pending_approval"
+    elif status == "needs_human":
+        recommended_action = "answer_human_gate_or_return_question"
+    elif status == "stuck":
+        recommended_action = "inspect_worker_then_retry_or_escalate"
+    elif status == "failed":
+        recommended_action = "inspect_failure_before_retry"
+    elif status == "awaiting_approval":
+        recommended_action = "approve_or_reject"
+    elif status in ("dispatched", "collecting"):
+        recommended_action = "wait_or_collect_results"
+    elif status == "completed":
+        recommended_action = "none"
+    else:
+        recommended_action = "continue_protocol"
+    item = dict(run)
+    item.update({
+        "last_activity_age_seconds": age,
+        "stale_dispatched": bool(stale_dispatched),
+        "needs_attention": bool(needs_attention),
+        "recommended_action": recommended_action,
+    })
+    return item
+
+
 def harness_status(state):
     runs = state.setdefault("harness_runs", [])
     active_status = {"routing", "awaiting_approval", "dispatched", "collecting", "needs_human", "stuck"}
+    now = datetime.now(timezone.utc)
+    stale_dispatch_seconds = int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_DISPATCH_SECONDS", "900"))
+    stale_approval_seconds = int(os.environ.get("LINGTAI_SIMPLE_HARNESS_STALE_APPROVAL_SECONDS", "7200"))
+    monitored_runs = [
+        _harness_watch_item(
+            r,
+            now=now,
+            stale_dispatch_seconds=stale_dispatch_seconds,
+            stale_approval_seconds=stale_approval_seconds,
+        )
+        for r in runs[:50]
+    ]
+    attention_runs = [r for r in monitored_runs if r.get("needs_attention")]
+    stale_dispatched_runs = [r for r in monitored_runs if r.get("stale_dispatched")]
+    active_ages = [r.get("last_activity_age_seconds") for r in monitored_runs if r.get("status") in active_status and r.get("last_activity_age_seconds") is not None]
+    all_ages = [r.get("last_activity_age_seconds") for r in monitored_runs if r.get("last_activity_age_seconds") is not None]
     return {
         "ok": True,
         "version": "v0.24",
         "harness": state.setdefault("harness", default_state()["harness"]),
+        "needs_attention": bool(attention_runs),
+        "stale_dispatched": len(stale_dispatched_runs),
+        "last_activity_age_seconds": min(all_ages) if all_ages else None,
+        "oldest_active_age_seconds": max(active_ages) if active_ages else None,
         "counts": {
             "total_runs": len(runs),
             "active_runs": len([r for r in runs if r.get("status") in active_status]),
             "awaiting_approval": len([r for r in runs if r.get("status") == "awaiting_approval"]),
             "completed": len([r for r in runs if r.get("status") == "completed"]),
+            "needs_attention": len(attention_runs),
+            "stale_dispatched": len(stale_dispatched_runs),
+            "needs_human": len([r for r in runs if r.get("status") == "needs_human"]),
+            "stuck": len([r for r in runs if r.get("status") == "stuck"]),
         },
-        "recent_runs": runs[:50],
+        "recent_runs": monitored_runs,
+        "watchdog": {
+            "stale_dispatch_seconds": stale_dispatch_seconds,
+            "stale_approval_seconds": stale_approval_seconds,
+            "attention_count": len(attention_runs),
+            "attention_runs": attention_runs[:20],
+            "stale_dispatched_runs": stale_dispatched_runs[:20],
+        },
         "worker_protocol": {
             "mail_subject_prefix": "LingTai Simple Harness 受控 worker 调度",
             "required_reply": "HARNESS_REPLY_JSON fenced json with worker_request_id, harness_run_id, status, summary, artifacts, next_action, external_side_effects",
