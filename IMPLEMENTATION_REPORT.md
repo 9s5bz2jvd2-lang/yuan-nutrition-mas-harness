@@ -6,9 +6,11 @@ Added `GET /api/standalone/status` as a read-only proof that the cloned lightwei
 
 Boundary retained: missing git, LingTai, Codex, or Claude never fails the endpoint. `missing_core` is reserved for actual core blockers and should be empty in this repo. Full LingTai is documented and reported as an optional bridge/enhancement, not a required install for core startup. The endpoint has no automatic external side effects and returns only presence/path/source labels, not secret values.
 
+Standalone connector layer added: `GET /api/connectors/status` reports `requires_full_lingtai=false`, `wechat_http.inbound_available=true`, outbound webhook configured/source labels, safe origin hostname, and pending standalone outbox count. `POST /api/connectors/wechat/incoming` reuses the existing WeChat routing path but records `source=standalone_wechat_http` and creates `connector=standalone_http` / `transport=standalone_wechat_http` outbox items. `GET|POST /api/connectors/wechat/pending` and `POST /api/connectors/wechat/mark_sent` only operate on standalone connector outbox entries. No poller or automatic sender loop was added; real outbound still requires an external WeChat provider/API/webhook credential through env vars such as `YUAN_WECHAT_OUTBOUND_URL` or `LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL`, and the full URL is never returned.
+
 The GUI now has a small "Standalone Mode / 自运行状态" card and modal that fetches `/api/standalone/status`, shows "Core can run / optional bridge not required", displays core blockers when present, and renders available/unavailable chips for standalone and optional bridge capabilities without redesigning the page.
 
-Self-check now asserts `/api/standalone/status` exists, core startup is OK, `missing_core` is empty, `optional_bridge.requires_full_lingtai` is false for core startup, required local capabilities are available, and the response does not leak fake secret values or high-confidence token patterns.
+Self-check now asserts `/api/standalone/status` exists, core startup is OK, `missing_core` is empty, `optional_bridge.requires_full_lingtai` is false for core startup, required local capabilities are available, `/api/connectors/status` reports standalone WeChat HTTP connector readiness, a fake standalone incoming message creates standalone inbox/outbox records, pending/mark_sent works, existing bridge tests still pass, and responses do not leak fake secret values or high-confidence token patterns.
 
 ## v0.24 follow-up — Minimal harness GUI affordance
 

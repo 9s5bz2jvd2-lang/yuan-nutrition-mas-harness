@@ -11,7 +11,7 @@ It uses Python standard library for the local server and vanilla HTML/CSS/JS for
 - Git is optional for core startup and required only for Time Machine / rollback features.
 - macOS Keychain is used when available for API keys; on other systems, run without stored keys or use environment-based configuration later.
 - Node.js is optional; only used for `node --check static/app.js` during developer validation.
-- Full LingTai is optional. Configure `LINGTAI_SIMPLE_NETWORK_DIR` only when you want controller mailbox dispatch, reply collection, or avatar/daemon bridge features.
+- Full LingTai is optional. Configure `LINGTAI_SIMPLE_NETWORK_DIR` only when you want controller mailbox dispatch, reply collection, or avatar/daemon bridge features. WeChat/external-channel inbound can also use the standalone HTTP connector without installing full LingTai.
 
 No `pip install` is required for the core local UI.
 
@@ -48,6 +48,7 @@ Optional standalone status check:
 
 ```bash
 curl http://127.0.0.1:8765/api/standalone/status
+curl http://127.0.0.1:8765/api/connectors/status
 ```
 
 `missing_core` should be empty in this repo. Missing git, LingTai, Codex, or Claude are reported as optional unavailable features, not core startup blockers.
@@ -72,7 +73,7 @@ Expected output:
 OK Yuan Nutrition MAS Harness v0.24 self-check passed
 ```
 
-The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies `/api/standalone/status` reports standalone core OK with empty `missing_core` and optional LingTai bridge semantics, task/approval flows, v0.23 harness run protocol, the read-only Harness Watchdog (`needs_attention` / stale dispatch detection / recommended actions), local-only manual harness resolution, harness recovery (`collect` is read-only; `request_retry` only creates an approval gate and does not auto-dispatch), scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including HARNESS_REPLY_JSON structured result parsing, next-action/artifact/side-effect field mapping, WeChat-origin result aggregation, and the external-side-effect return gate that blocks `ready_for_bridge` outbox creation until explicit approval. It also verifies `.secrets` is not readable through the memory endpoint and that standalone status does not leak fake secret values.
+The self-check starts a temporary local server, builds an isolated fake `.lingtai` network, verifies `/api/standalone/status` reports standalone core OK with empty `missing_core`, verifies `/api/connectors/status` and standalone WeChat HTTP inbound/pending/mark_sent behavior without leaking fake webhook secrets, and checks optional LingTai bridge semantics, task/approval flows, v0.23 harness run protocol, the read-only Harness Watchdog (`needs_attention` / stale dispatch detection / recommended actions), local-only manual harness resolution, harness recovery (`collect` is read-only; `request_retry` only creates an approval gate and does not auto-dispatch), scoped approval grants (allow-once auto-confirm + destructive-action refusal), rollback guards, WeChat bridge endpoint behavior, Claude Code safety gates, real mailbox outbox writing in the fake network, reply collection, lifecycle approval, avatar bind/retire gates, the memory/skill read-only index, budget/cost guardrail panel, and controlled worker dispatch/collection through a fake controller mailbox including HARNESS_REPLY_JSON structured result parsing, next-action/artifact/side-effect field mapping, WeChat-origin result aggregation, and the external-side-effect return gate that blocks `ready_for_bridge` outbox creation until explicit approval. It also verifies `.secrets` is not readable through the memory endpoint and that standalone status does not leak fake secret values.
 
 Developer optional checks:
 
@@ -105,7 +106,7 @@ Works locally without credentials:
 - Harness run state and standalone status: `/api/harness/status` and `/api/standalone/status`.
 - Budget/cost guardrails as local estimates.
 - Time Machine snapshot/preview/request when the folder is a local git repo.
-- WeChat bridge HTTP endpoints are present locally, but actual WeChat transport still needs an existing bridge runner.
+- WeChat bridge HTTP endpoints are present locally. Actual WeChat transport can use either the existing optional LingTai MCP bridge endpoints or the standalone HTTP connector endpoints. Real outbound sending still needs an external WeChat provider/API/webhook credential; the app does not start a poller or auto-send from status endpoints.
 - Harness status endpoint: `/api/harness/status` shows intake/route/approval/dispatch/collect/return runs.
 - Harness GUI: the existing Harness Run Protocol modal shows `side_effect_reviews` and pending/approved/denied review status, with tiny controls for read-only collect, approval-gated retry, and local-only manual resolution.
 - Harness recovery endpoint: `POST /api/harness/recover` supports `action=collect` (read-only reply collection) and `action=request_retry` (create approval-gated retry; no automatic mailbox resend).
@@ -118,6 +119,7 @@ Optional local tools, credentials, or bridge configuration:
 - Claude Code L1/L2/L3/L4/L5 require the local `claude` CLI and explicit confirmation gates.
 - GitHub PR/merge executors require `gh` login and explicit confirmation.
 - Optional LingTai bridge features require `LINGTAI_SIMPLE_NETWORK_DIR` to point to a real `.lingtai` network and, for avatar launch, `LINGTAI_SIMPLE_AGENT_CMD`. This includes controller mailbox dispatch, reply collection from a real inbox, daemon bridge, and avatar bridge.
+- Optional standalone WeChat outbound configuration can use `YUAN_WECHAT_OUTBOUND_URL` or `LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL`. These values may contain provider tokens, so API responses only show configured/source labels and a safe hostname, never the full URL.
 
 ## 7. Safety / 安全
 

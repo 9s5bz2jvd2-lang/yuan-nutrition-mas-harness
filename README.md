@@ -2,15 +2,18 @@
 
 **Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan, inspired by [LingTai](https://github.com/Lingtai-AI/lingtai) and able to bridge to it when configured. The lightweight harness core is standalone: after clone/download it runs with Python stdlib plus the included vanilla HTML/CSS/JS UI. You do **not** need to install full LingTai to start the local app, task queue, approval gates, harness run state, budget guardrails, docs, or self-check.
 
-This is not a shell or a button-only GUI. It is a runnable **lightweight harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on the optional LingTai bridge entry points, read-only memory/skill indexes when a LingTai agent directory is configured, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Full LingTai capabilities are optional enhancements: daemon requests can be written to a configured LingTai controller mailbox, replies can be collected from a configured inbox, and avatar/daemon bridge features require a real LingTai network. Codex/Claude are also optional local CLI workers. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
+This is not a shell or a button-only GUI. It is a runnable **lightweight harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on optional LingTai bridge entry points, a standalone HTTP connector for WeChat/external-channel inbound, read-only memory/skill indexes when a LingTai agent directory is configured, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Full LingTai capabilities are optional enhancements: daemon requests can be written to a configured LingTai controller mailbox, replies can be collected from a configured inbox, and avatar/daemon bridge features require a real LingTai network. Codex/Claude are also optional local CLI workers. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
 
 Standalone proof endpoint:
 
 ```bash
 curl http://127.0.0.1:8765/api/standalone/status
+curl http://127.0.0.1:8765/api/connectors/status
 ```
 
-It reports core runtime status, local standalone capabilities, optional bridge capabilities, `missing_core`, and recommended actions. Missing git, Codex, Claude, or LingTai are reported as unavailable optional features rather than core startup failures.
+It reports core runtime status, local standalone capabilities, standalone connector status, optional bridge capabilities, `missing_core`, and recommended actions. Missing git, Codex, Claude, or LingTai are reported as unavailable optional features rather than core startup failures.
+
+Standalone WeChat/external-channel connector: full LingTai is **not** required for local inbound. `POST /api/connectors/wechat/incoming` accepts `text`, `user_id`, `message_id`, and optional `sender`, routes through the same harness logic, and creates a standalone `wechat_outbox` item. `POST /api/connectors/wechat/pending` and `POST /api/connectors/wechat/mark_sent` are endpoint-driven; no poller or sender loop is started. Real outbound sending still needs an external WeChat provider/API/webhook credential such as `YUAN_WECHAT_OUTBOUND_URL` or `LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL`; status only returns configured/source labels and safe hostname, never the secret URL. The existing `/api/wechat/bridge/*` LingTai MCP bridge endpoints remain supported.
 
 
 ## v0.24: GUI Worker Launcher
@@ -105,6 +108,9 @@ UI 里点击 **📋 架构验收表** 可查看每一项要求的 `Done / Partia
 
 - `POST /api/task/route`：把一句话分类为普通本地任务、多 agent、洞察、心流、收功、真实 LingTai mailbox 派发、结果回收、Claude/Codex handoff 或 daemon 计划，并创建 harness run。
 - `POST /api/wechat/bridge/pending`：返回 `ready_for_bridge` 的微信 outbox 项，供当前 LingTai WeChat MCP 桥接者发送；runner contract 固定为 `no_second_poller`。
+- `GET /api/connectors/status`：只读返回 standalone connector 状态；`requires_full_lingtai=false`，不回显 outbound webhook URL。
+- `POST /api/connectors/wechat/incoming`：无需完整 LingTai 的 standalone HTTP inbound；同样写入 `wechat_inbox`、走统一路由、生成 standalone outbox。
+- `GET|POST /api/connectors/wechat/pending` 与 `POST /api/connectors/wechat/mark_sent`：仅处理 standalone connector 的 pending/sent 标记，不自动外发。
 - `/api/wechat/bridge/incoming` 的默认普通消息走统一 Task Router / Harness，并在 inbox 记录 `route_id` 与 `harness_run_id`，便于追踪“微信一句话 → 路由 → 确认/派发/回收/回传”的路径。
 - `confirm_dispatch=true` 时，router 可在 fake/真实 `.lingtai` 网络中写入真实内部邮箱 outbox；未确认时只创建本地任务并提示需要确认，避免误唤醒/占用真实 agent。
 
@@ -187,7 +193,7 @@ python3 scripts/self_check.py
 
 ## 仍未完成
 
-- 自治式独立微信 poller（当前刻意仍由现有 LingTai WeChat MCP 桥接，避免双 poller；v0.23 提供 pending outbox/runner contract 与 harness run 审计链）。
+- 自治式独立微信 poller（当前刻意不启动 poller；standalone HTTP connector 已提供 endpoint-driven inbound/pending/mark_sent，真实 outbound 仍需外部 WeChat provider/API/webhook 凭证）。
 - 完整 LingTai avatar spawn / delete 管理；当前做到既有 agent 发现/绑定、安全 shallow spawn、退休/解绑、派发、回复回收、确认后 signal/CPR。
 - skills / knowledge / molt / soul 的完整 kernel 深度接入。
 - Mac app 外壳与安装体验。

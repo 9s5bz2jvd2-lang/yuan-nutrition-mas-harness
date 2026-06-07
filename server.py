@@ -1189,6 +1189,18 @@ def default_state():
             "mark_sent_endpoint": "/api/wechat/bridge/mark_sent",
             "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点和 runner 合约，不启动第二 poller。",
         },
+        "standalone_connectors": {
+            "wechat_http": {
+                "mode": "standalone_http_connector",
+                "inbound_endpoint": "/api/connectors/wechat/incoming",
+                "pending_endpoint": "/api/connectors/wechat/pending",
+                "mark_sent_endpoint": "/api/connectors/wechat/mark_sent",
+                "status_endpoint": "/api/connectors/status",
+                "outbound_env_names": ["YUAN_WECHAT_OUTBOUND_URL", "LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL"],
+                "requires_full_lingtai": False,
+                "note": "轻量 harness 自带 HTTP 连接器：本地 inbound 不需要完整 LingTai；真实 outbound 仍需外部 WeChat provider/API/webhook 凭证。",
+            },
+        },
         "router_runs": [],     # v0.23 统一 Task Router 运行记录：一句话 -> route -> task/agent/mailbox/cc/shougong
         "worker_requests": [],  # v0.23 受控 worker 调度：daemon/Codex/Claude/avatar handoff -> approval -> real LingTai mailbox -> result collection
         "worker_launches": [],   # v0.24 GUI-triggered real worker launches: Codex/Claude local subprocess, daemon/controller dispatch, avatar spawn approval
@@ -1269,6 +1281,8 @@ def normalize_state(state):
     state["wechat_bridge"].setdefault("pending_endpoint", "/api/wechat/bridge/pending")
     state["wechat_bridge"].setdefault("incoming_endpoint", "/api/wechat/bridge/incoming")
     state["wechat_bridge"].setdefault("mark_sent_endpoint", "/api/wechat/bridge/mark_sent")
+    state.setdefault("standalone_connectors", base["standalone_connectors"])
+    state["standalone_connectors"].setdefault("wechat_http", base["standalone_connectors"]["wechat_http"])
     state.setdefault("router_runs", [])
     state.setdefault("worker_requests", [])
     state.setdefault("worker_launches", [])
@@ -4083,8 +4097,81 @@ def wechat_bridge_pending(state, payload=None):
     """Return pending WeChat outbox items for the current LingTai MCP bridge to send; no poller, no credentials."""
     payload = payload or {}
     limit = int(payload.get("limit") or 20)
-    pending = [x for x in state.get("wechat_outbox", []) if x.get("status") == "ready_for_bridge"][:limit]
+    pending = [
+        x for x in state.get("wechat_outbox", [])
+        if x.get("status") == "ready_for_bridge"
+        and x.get("connector", "lingtai_mcp_bridge") == "lingtai_mcp_bridge"
+    ][:limit]
     return {"pending": pending, "count": len(pending), "runner_contract": state.get("wechat_bridge", {}).get("runner_contract", "no_second_poller")}, None
+
+
+def _connector_outbound_url_status():
+    for name in ("YUAN_WECHAT_OUTBOUND_URL", "LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL"):
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        origin = parsed.hostname or ""
+        return {
+            "configured": True,
+            "source": name,
+            "origin_host": origin,
+            "secret_value_returned": False,
+        }
+    return {
+        "configured": False,
+        "source": "not_configured",
+        "origin_host": "",
+        "secret_value_returned": False,
+    }
+
+
+def connectors_status(state):
+    """Read-only connector status. Never returns outbound webhook secret values."""
+    outbound = _connector_outbound_url_status()
+    pending = [
+        x for x in state.get("wechat_outbox", [])
+        if x.get("connector") == "standalone_http"
+        and x.get("status") in ("ready_for_connector", "dispatch_failed")
+    ]
+    configured = state.setdefault("standalone_connectors", default_state()["standalone_connectors"]).get("wechat_http", {})
+    return {
+        "ok": True,
+        "requires_full_lingtai": False,
+        "note": "Standalone HTTP connectors can accept local WeChat/external-channel inbound without full LingTai. Real outbound WeChat sending still requires external WeChat provider/API/webhook credentials; LingTai MCP bridge remains optional.",
+        "wechat_http": {
+            "mode": "standalone_http_connector",
+            "available": outbound["configured"],
+            "requires_full_lingtai": False,
+            "inbound_available": True,
+            "outbound_configured": outbound["configured"],
+            "outbound_source": outbound["source"],
+            "outbound_origin_host": outbound["origin_host"],
+            "pending_outbox_count": len(pending),
+            "inbound_endpoint": configured.get("inbound_endpoint", "/api/connectors/wechat/incoming"),
+            "pending_endpoint": configured.get("pending_endpoint", "/api/connectors/wechat/pending"),
+            "mark_sent_endpoint": configured.get("mark_sent_endpoint", "/api/connectors/wechat/mark_sent"),
+            "status_endpoint": configured.get("status_endpoint", "/api/connectors/status"),
+            "secret_value_returned": False,
+        },
+        "safety": {
+            "read_only": True,
+            "automatic_external_side_effects": False,
+            "secret_values_returned": False,
+            "no_background_poller": True,
+        },
+    }
+
+
+def standalone_wechat_pending(state, payload=None):
+    payload = payload or {}
+    limit = int(payload.get("limit") or 20)
+    pending = [
+        x for x in state.get("wechat_outbox", [])
+        if x.get("connector") == "standalone_http"
+        and x.get("status") in ("ready_for_connector", "dispatch_failed")
+    ][:limit]
+    return {"pending": pending, "count": len(pending), "runner_contract": "endpoint_driven_explicit_dispatch"}, None
 
 def wechat_submit(state, payload):
     """模拟微信入口：收到一条消息 → ACK → 排队 → 执行 → 完成。"""
@@ -4145,7 +4232,9 @@ def _find_pending_approval(state, approval_id):
     return None
 
 
-def _wechat_outbox_add(state, *, inbound_id, user_id, reply_to_message_id, reply_text, status="ready_for_bridge"):
+def _wechat_outbox_add(state, *, inbound_id, user_id, reply_to_message_id, reply_text,
+                       status="ready_for_bridge", connector="lingtai_mcp_bridge",
+                       transport="lingtai_wechat_mcp_bridge"):
     item = {
         "id": new_id("wxout"),
         "inbound_id": inbound_id,
@@ -4154,7 +4243,8 @@ def _wechat_outbox_add(state, *, inbound_id, user_id, reply_to_message_id, reply
         "reply_text": redact(reply_text),
         "status": status,  # ready_for_bridge / sent / failed
         "created_at": now_iso(),
-        "transport": "lingtai_wechat_mcp_bridge",
+        "connector": connector,
+        "transport": transport,
     }
     state.setdefault("wechat_outbox", []).insert(0, item)
     state["wechat_outbox"] = state["wechat_outbox"][:50]
@@ -4169,7 +4259,7 @@ def _bridge_status_text(state):
         "圆酱，Yuan Nutrition MAS Harness v0.24 当前状态：",
         f"- 灵：{len(agents)}/{MAX_AGENTS} 个；待确认：{len(pending)}；进行中/待处理任务：{len(active)}。",
         f"- 已真实接入：微信桥接入口、Keychain、真实模型 API（需费用确认）、git Time Machine/rollback。",
-        "- 微信桥接说明：我通过现有 LingTai WeChat MCP 原路回复，不启动第二个微信 poller。",
+        "- 微信连接说明：可通过 standalone HTTP connector 接入 inbound；也可继续用现有 LingTai WeChat MCP 原路回复。不启动第二个微信 poller。",
     ]
     if pending:
         lines.append("\n待确认：")
@@ -4205,6 +4295,35 @@ def wechat_bridge_incoming(state, payload):
     wechat.reply 回去。这样避免第二个 poller 抢消息，同时把 LingTai Simple 的任务/确认/rollback
     状态真实落盘。
     """
+    return _wechat_incoming(
+        state, payload,
+        source="real_wechat_bridge",
+        route_source="wechat_bridge",
+        connector="lingtai_mcp_bridge",
+        transport="lingtai_wechat_mcp_bridge",
+        outbox_status="ready_for_bridge",
+        ack="已通过真实微信桥接收到 ✅",
+        initial_stages=["真实微信收到", "写入 LingTai Simple"],
+        log_label="真实微信桥接收到",
+    )
+
+
+def standalone_wechat_incoming(state, payload):
+    """Standalone HTTP connector inbound. No full LingTai install or poller required."""
+    return _wechat_incoming(
+        state, payload,
+        source="standalone_wechat_http",
+        route_source="standalone_wechat_http",
+        connector="standalone_http",
+        transport="standalone_wechat_http",
+        outbox_status="ready_for_connector",
+        ack="已通过 standalone HTTP connector 收到 ✅",
+        initial_stages=["standalone connector 收到", "写入 LingTai Simple"],
+        log_label="standalone WeChat HTTP connector 收到",
+    )
+
+
+def _wechat_incoming(state, payload, *, source, route_source, connector, transport, outbox_status, ack, initial_stages, log_label):
     text = (payload.get("text") or "").strip()
     if not text:
         return None, "微信桥接消息不能为空"
@@ -4218,19 +4337,19 @@ def wechat_bridge_incoming(state, payload):
         "id": inbound_id,
         "text": redact(text),
         "received_at": now_iso(),
-        "source": "real_wechat_bridge",
+        "source": source,
         "user_id": user_id,
         "message_id": message_id,
         "sender": sender,
-        "ack": "已通过真实微信桥接收到 ✅",
-        "stages": ["真实微信收到", "写入 LingTai Simple"],
+        "ack": ack,
+        "stages": list(initial_stages),
         "status": "处理中",
         "assignee": "主控桥接",
         "result": None,
     }
     state.setdefault("wechat_inbox", []).insert(0, item)
     state["wechat_inbox"] = state["wechat_inbox"][:50]
-    log_event(state, f"真实微信桥接收到：{text[:40]}", kind="wechat")
+    log_event(state, f"{log_label}：{text[:40]}", kind="wechat")
 
     reply = None
     # ---- Command routing ----
@@ -4278,7 +4397,7 @@ def wechat_bridge_incoming(state, payload):
         reply = flow["text"] if not err else f"心流失败：{err}"
     elif lower.startswith(("多agent ", "多 agent ", "multiagent ", "multi-agent ")):
         objective = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
-        batch, err = orchestrate_multi_agent(state, {"objective": objective, "source": "wechat_bridge"})
+        batch, err = orchestrate_multi_agent(state, {"objective": objective, "source": route_source})
         item["status"] = "完成" if not err else "卡住"
         item["stages"].append("多 agent 编排已生成" if not err else "多 agent 编排失败")
         if err:
@@ -4311,7 +4430,7 @@ def wechat_bridge_incoming(state, payload):
     else:
         # 默认入口统一交给 v0.23 Task Router：一句话 -> 分类 -> 本地任务/真实 mailbox/代码苦力计划/回收等。
         routed, err = route_task(state, {
-            "text": text, "source": "wechat_bridge",
+            "text": text, "source": route_source,
             "confirm_dispatch": bool(payload.get("confirm_dispatch")),
             "address": payload.get("address") or "",
             "inbound_id": inbound_id, "user_id": user_id, "message_id": message_id,
@@ -4330,22 +4449,34 @@ def wechat_bridge_incoming(state, payload):
 
     item["result"] = reply
     out = _wechat_outbox_add(state, inbound_id=inbound_id, user_id=user_id,
-                             reply_to_message_id=message_id, reply_text=reply)
+                             reply_to_message_id=message_id, reply_text=reply,
+                             status=outbox_status, connector=connector, transport=transport)
     return {"inbound": item, "outbox": out, "reply_text": reply, "should_reply": True}, None
 
 
-def wechat_bridge_mark_sent(state, payload):
+def _wechat_outbox_mark_sent(state, payload, *, allowed_connector, log_label):
     outbox_id = payload.get("outbox_id") or payload.get("id")
     sent_message_id = payload.get("sent_message_id") or payload.get("message_id")
+    via = payload.get("via") or payload.get("transport") or ""
     for item in state.setdefault("wechat_outbox", []):
-        if item.get("id") == outbox_id:
+        connector = item.get("connector", "lingtai_mcp_bridge")
+        if item.get("id") == outbox_id and connector == allowed_connector:
             item["status"] = "sent"
             item["sent_at"] = now_iso()
+            item["sent_via"] = redact(via) if via else allowed_connector
             if sent_message_id:
                 item["sent_message_id"] = str(sent_message_id)
-            log_event(state, f"微信桥接回复已标记发送：{outbox_id}", kind="wechat")
+            log_event(state, f"{log_label}回复已标记发送：{outbox_id}", kind="wechat")
             return item, None
     return None, "找不到该微信 outbox 项"
+
+
+def wechat_bridge_mark_sent(state, payload):
+    return _wechat_outbox_mark_sent(state, payload, allowed_connector="lingtai_mcp_bridge", log_label="微信桥接")
+
+
+def standalone_wechat_mark_sent(state, payload):
+    return _wechat_outbox_mark_sent(state, payload, allowed_connector="standalone_http", log_label="standalone connector")
 
 
 def generate_shougong(state):
@@ -5835,6 +5966,7 @@ def health_check():
             "real model API calls require explicit UI action (may cost money)",
             "real git Time Machine / rollback: snapshot, diff preview, confirmation-gated reset --hard",
             "real WeChat command entry via current LingTai WeChat MCP bridge; no second WeChat poller is started",
+            "real standalone WeChat HTTP connector inbound/pending/mark_sent; full LingTai is not required for this channel path",
             "real unified Task Router: /api/task/route classifies one sentence into local task / multi-agent / insight / soul / shougong / LingTai mailbox / handoff",
             "real WeChat pending outbox endpoint: /api/wechat/bridge/pending for the existing MCP bridge runner",
             "real Claude Code L1 read-only analysis worker (explicit cost confirmation required)",
@@ -5850,7 +5982,7 @@ def health_check():
             "real LingTai lifecycle signals: confirmation-gated lull/suspend/interrupt/clear/CPR (no filesystem deletion, no nirvana)",
             "real LingTai durable-store index: read-only pad/knowledge/custom skills/shared skills/summaries view",
             "real scoped approval grants: allow-once / allow-for-task for bounded non-destructive repeat approvals; destructive actions stay per-item",
-            "not connected yet: autonomous standalone WeChat poller",
+            "not connected: autonomous standalone WeChat poller; standalone connector remains endpoint-driven",
             "Secret Vault health scan reports plaintext-key risks and unsafe fallback permissions without returning values",
             "no plaintext API key in JSON/logs/responses (Keychain-first; restricted env/.secrets fallback)",
         ],
@@ -5948,6 +6080,7 @@ def standalone_status():
         },
         "codex_cli_worker": _optional_tool_status("Codex local CLI worker", "codex"),
         "claude_cli_worker": _optional_tool_status("Claude local CLI worker", "claude"),
+        "standalone_wechat_http_connector": connectors_status(load_state()).get("wechat_http", {}),
     }
     local_capabilities["codex_cli_worker"]["optional"] = True
     local_capabilities["claude_cli_worker"]["optional"] = True
@@ -6027,7 +6160,7 @@ def standalone_status():
             "ok": not missing_core,
             "server": "running",
             "requires_full_lingtai": False,
-            "statement": "Standalone lightweight core works after clone/download with Python stdlib; LingTai bridge is optional.",
+            "statement": "Standalone lightweight core works after clone/download with Python stdlib; LingTai bridge is optional. WeChat/external channels can connect through the standalone HTTP connector without full LingTai.",
         },
         "core_runtime": {
             "ok": not missing_core,
@@ -6040,6 +6173,7 @@ def standalone_status():
         },
         "standalone_capabilities": local_capabilities,
         "optional_bridge": optional_bridge,
+        "standalone_connectors": connectors_status(load_state()),
         "missing_core": missing_core,
         "recommended_actions": recommended_actions,
         "safety": {
@@ -6151,6 +6285,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(health_check())
         if route == "/api/standalone/status":
             return self._send_json(standalone_status())
+        if route == "/api/connectors/status":
+            state = load_state()
+            return self._send_json(connectors_status(state))
+        if route == "/api/connectors/wechat/pending":
+            state = load_state()
+            query = parse_qs(parsed.query)
+            payload = {"limit": (query.get("limit") or ["20"])[0]}
+            result, err = standalone_wechat_pending(state, payload)
+            return self._send_json({"ok": err is None, "result": result} if not err else {"ok": False, "error": err}, 200 if not err else 400)
         if route == "/api/secret/scan":
             return self._send_json(secret_vault_health_scan())
         if route == "/api/architecture/status":
@@ -6318,6 +6461,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/wechat/bridge/incoming": lambda s, p: wechat_bridge_incoming(s, p),
             "/api/wechat/bridge/pending": lambda s, p: wechat_bridge_pending(s, p),
             "/api/wechat/bridge/mark_sent": lambda s, p: wechat_bridge_mark_sent(s, p),
+            "/api/connectors/wechat/incoming": lambda s, p: standalone_wechat_incoming(s, p),
+            "/api/connectors/wechat/pending": lambda s, p: standalone_wechat_pending(s, p),
+            "/api/connectors/wechat/mark_sent": lambda s, p: standalone_wechat_mark_sent(s, p),
             "/api/demo/load": lambda s, p: load_demo_state(s, p),
             "/api/shougong": lambda s, p: (generate_shougong(s), None),
             "/api/rollback/snapshot": lambda s, p: create_snapshot(s, p),
@@ -6350,6 +6496,7 @@ class Handler(BaseHTTPRequestHandler):
             "wechat_inbox": state.get("wechat_inbox", [])[:30],
             "wechat_outbox": state.get("wechat_outbox", [])[:30],
             "wechat_bridge": state.get("wechat_bridge", {}),
+            "standalone_connectors": state.get("standalone_connectors", {}),
             "router_runs": state.get("router_runs", [])[:30],
             "worker_requests": state.get("worker_requests", [])[:30],
             "worker_launches": state.get("worker_launches", [])[:30],

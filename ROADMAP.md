@@ -2,6 +2,8 @@
 
 Yuan Nutrition MAS Harness is an early, runnable lightweight MAS harness inspired by LingTai, with an optional LingTai bridge. The core app runs standalone after clone/download with Python stdlib; the roadmap below keeps the project honest by separating what already works from optional bridge/tool hardening.
 
+Current connector boundary: WeChat/external-channel inbound is no longer tied to a full LingTai install. The lightweight harness exposes a standalone HTTP connector (`/api/connectors/wechat/incoming`, pending, mark_sent, and status) that reuses the same routing/approval path and never starts a poller. Real outbound send still depends on an external WeChat provider/API/webhook credential, while the LingTai MCP bridge remains an optional compatibility path.
+
 ## Current baseline: v0.23
 
 Current prototype capabilities include:

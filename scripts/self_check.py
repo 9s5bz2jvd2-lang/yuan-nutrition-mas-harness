@@ -82,6 +82,7 @@ time.sleep(30)
            'LINGTAI_SIMPLE_REPLY_INBOX': 'mimo-2-5-pro',
            'LINGTAI_SIMPLE_AGENT_CMD': str(fake_agent_cmd),
            'LINGTAI_SIMPLE_DISABLE_KEYCHAIN': '1',
+           'YUAN_WECHAT_OUTBOUND_URL': 'https://wechat-provider.example.test/send?token=' + FAKE_ENV_KEY,
            'LINGTAI_SIMPLE_API_KEY_DEEPSEEK': FAKE_ENV_KEY}
     proc = subprocess.Popen([sys.executable, 'server.py'], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -109,9 +110,21 @@ time.sleep(30)
         assert standalone['standalone_capabilities']['approvals']['available'] is True, standalone
         assert standalone['standalone_capabilities']['harness_run_state']['available'] is True, standalone
         assert standalone['standalone_capabilities']['cost_guardrails']['available'] is True, standalone
+        assert standalone['standalone_capabilities']['standalone_wechat_http_connector']['inbound_available'] is True, standalone
+        assert standalone['standalone_connectors']['requires_full_lingtai'] is False, standalone
+        assert standalone['standalone_connectors']['wechat_http']['outbound_configured'] is True, standalone
         standalone_text=json.dumps(standalone, ensure_ascii=False)
         assert FAKE_KEY not in standalone_text and FAKE_ENV_KEY not in standalone_text and FAKE_FALLBACK_KEY not in standalone_text, standalone
         assert not SECRET_VALUE_RE.search(standalone_text), standalone
+        connectors=req('/api/connectors/status')
+        assert connectors['ok'] and connectors['requires_full_lingtai'] is False, connectors
+        assert connectors['wechat_http']['inbound_available'] is True, connectors
+        assert connectors['wechat_http']['outbound_configured'] is True, connectors
+        assert connectors['wechat_http']['outbound_source'] == 'YUAN_WECHAT_OUTBOUND_URL', connectors
+        assert connectors['wechat_http']['outbound_origin_host'] == 'wechat-provider.example.test', connectors
+        connectors_text=json.dumps(connectors, ensure_ascii=False)
+        assert FAKE_KEY not in connectors_text and FAKE_ENV_KEY not in connectors_text and FAKE_FALLBACK_KEY not in connectors_text, connectors
+        assert not SECRET_VALUE_RE.search(connectors_text), connectors
         arch=req('/api/architecture/status')
         assert arch['ok'] and arch['version']=='v0.24' and arch['summary']['total'] >= 10, arch
         assert arch['summary']['done'] >= 4 and arch['summary']['partial'] >= 1, arch
@@ -593,6 +606,24 @@ time.sleep(30)
         assert rb['ok'] and rb['result']['action']=='rollback_apply' and rb['result'].get('rollback_ref'), rb
 
         # 再次确认：任何写盘后 state.json 仍无假 key
+        # ---- Standalone WeChat HTTP connector：不安装完整 LingTai 也可本地接入 inbound；outbound 仍显式 pending/mark ----
+        swx=req('/api/connectors/wechat/incoming', {'text':'状态','user_id':'wx_standalone_selfcheck','message_id':'msg_standalone_status','sender':'圆酱'})
+        assert swx['ok'] and swx['result']['should_reply'] is True, swx
+        assert swx['result']['inbound']['source'] == 'standalone_wechat_http', swx
+        assert 'Yuan Nutrition MAS Harness v0.24' in swx['result']['reply_text'], swx
+        assert swx['result']['outbox']['connector'] == 'standalone_http', swx
+        assert swx['result']['outbox']['transport'] == 'standalone_wechat_http', swx
+        assert swx['result']['outbox']['status'] == 'ready_for_connector', swx
+        spending=req('/api/connectors/wechat/pending', {'limit': 10})
+        assert spending['ok'] and spending['result']['count'] >= 1, spending
+        assert any(o.get('id') == swx['result']['outbox']['id'] and o.get('connector') == 'standalone_http' for o in spending['result']['pending']), spending
+        smark=req('/api/connectors/wechat/mark_sent', {'outbox_id': swx['result']['outbox']['id'], 'sent_message_id':'sent_standalone_status', 'via':'self_check_provider'})
+        assert smark['ok'] and smark['result']['status'] == 'sent' and smark['result']['sent_via'] == 'self_check_provider', smark
+        connectors_after=req('/api/connectors/status')
+        assert connectors_after['ok'] and connectors_after['wechat_http']['pending_outbox_count'] >= 0, connectors_after
+        connectors_after_text=json.dumps(connectors_after, ensure_ascii=False)
+        assert FAKE_ENV_KEY not in connectors_after_text and not SECRET_VALUE_RE.search(connectors_after_text), connectors_after
+
         # ---- WeChat bridge：真实控制端点（不启动第二个 poller），可入队、生成 outbox、状态/确认命令可用 ----
         wx=req('/api/wechat/bridge/incoming', {'text':'状态','user_id':'wx_selfcheck','message_id':'msg_selfcheck_status','sender':'圆酱'})
         assert wx['ok'] and wx['result']['should_reply'] is True, wx

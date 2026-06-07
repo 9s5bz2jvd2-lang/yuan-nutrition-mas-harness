@@ -128,6 +128,21 @@
     "mark_sent_endpoint": "/api/wechat/bridge/mark_sent",
     "note": "由当前 LingTai 的 WeChat MCP 作为唯一真实收发桥；本服务只提供 localhost 控制端点和 runner 合约，不启动第二 poller。"
   },
+  "standalone_connectors": {
+    "wechat_http": {
+      "mode": "standalone_http_connector",
+      "inbound_endpoint": "/api/connectors/wechat/incoming",
+      "pending_endpoint": "/api/connectors/wechat/pending",
+      "mark_sent_endpoint": "/api/connectors/wechat/mark_sent",
+      "status_endpoint": "/api/connectors/status",
+      "outbound_env_names": [
+        "YUAN_WECHAT_OUTBOUND_URL",
+        "LINGTAI_SIMPLE_WECHAT_OUTBOUND_URL"
+      ],
+      "requires_full_lingtai": false,
+      "note": "轻量 harness 自带 HTTP 连接器：本地 inbound 不需要完整 LingTai；真实 outbound 仍需外部 WeChat provider/API/webhook 凭证。"
+    }
+  },
   "router_runs": [],
   "worker_requests": [],
   "worker_launches": [],

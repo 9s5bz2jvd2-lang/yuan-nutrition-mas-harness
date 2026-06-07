@@ -148,7 +148,7 @@ function renderStandalone() {
   const el = $("#standalone-panel");
   if (!el) return;
   el.innerHTML = `
-    <div class="preview">Core can run / 核心可运行：本地 GUI、任务队列、确认队列、harness_run 状态、预算/成本闸都属于轻量版 core。LingTai bridge、Codex/Claude CLI、git Time Machine 是可选增强。</div>
+    <div class="preview">Core can run / 核心可运行：本地 GUI、任务队列、确认队列、harness_run 状态、预算/成本闸都属于轻量版 core。自带 WeChat HTTP connector 可本地接入 inbound，不需要完整 LingTai；LingTai bridge、Codex/Claude CLI、git Time Machine 是可选增强。</div>
     <div class="row-actions"><button class="btn small" onclick="openStandaloneModal()">刷新自运行状态</button></div>
   `;
 }
@@ -210,7 +210,9 @@ function renderWechat() {
   const inbox = STATE.wechat_inbox || [];
   const outbox = STATE.wechat_outbox || [];
   const bridge = STATE.wechat_bridge || {};
-  const bridgeBanner = `<div class="preview">桥接状态：${esc(bridge.status || "unknown")} · ${esc(bridge.note || "")}</div>`;
+  const connector = (STATE.standalone_connectors || {}).wechat_http || {};
+  const standaloneOutbox = outbox.filter(o => o.connector === "standalone_http" && (o.status === "ready_for_connector" || o.status === "dispatch_failed"));
+  const bridgeBanner = `<div class="preview">桥接状态：${esc(bridge.status || "unknown")} · ${esc(bridge.note || "")}<br>自带连接器：${esc(connector.mode || "standalone_http_connector")} · inbound locally available · full LingTai not required · standalone pending ${standaloneOutbox.length}</div>`;
   const inboxHtml = inbox.length ? inbox.map(w => `
     <div class="row">
       <div class="row-top">
@@ -1385,10 +1387,13 @@ function standaloneRows(items) {
 async function openStandaloneModal() {
   const res = await fetch("/api/standalone/status");
   const s = await res.json();
+  const cres = await fetch("/api/connectors/status");
+  const c = await cres.json();
   const core = s.core_startup || {};
   const runtime = s.core_runtime || {};
   const caps = s.standalone_capabilities || {};
   const bridge = s.optional_bridge || {};
+  const wxc = (c || {}).wechat_http || {};
   const blockers = s.missing_core || [];
   const paths = runtime.paths || {};
   const pathRows = ["base_dir", "data_dir", "state_path", "static_index", "static_app", "self_check"].map(k => {
@@ -1412,6 +1417,8 @@ async function openStandaloneModal() {
       ${standaloneChip("core", !!core.ok)}
       ${standaloneChip("LingTai bridge optional", !(bridge.required_for_core_startup))}
       ${standaloneChip("no full LingTai required for core", bridge.requires_full_lingtai === false)}
+      ${standaloneChip("WeChat HTTP inbound", wxc.inbound_available === true)}
+      ${standaloneChip("WeChat outbound webhook", wxc.outbound_configured === true)}
     </div>
     <h3 class="sub">Core blockers</h3>
     ${blockers.length ? `<div class="preview danger">${blockers.map(esc).join("<br>")}</div>` : `<div class="preview">None / 无。missing_core is empty.</div>`}
@@ -1419,6 +1426,12 @@ async function openStandaloneModal() {
     ${pathRows}
     <h3 class="sub">Standalone capabilities</h3>
     ${standaloneRows(caps)}
+    <h3 class="sub">Standalone Connectors / 自带连接器</h3>
+    <div class="preview">${esc((c || {}).note || "")}</div>
+    <div class="mini-row"><b>wechat_http</b> ${statusTag(wxc.inbound_available ? "可用" : "不可用")}<br>
+      <span class="muted">mode=${esc(wxc.mode || "")} · outbound=${wxc.outbound_configured ? "configured" : "not configured"} · source=${esc(wxc.outbound_source || "")} · host=${esc(wxc.outbound_origin_host || "")} · pending=${esc(String(wxc.pending_outbox_count || 0))}</span><br>
+      <span class="muted">${esc(wxc.inbound_endpoint || "")} · ${esc(wxc.pending_endpoint || "")} · ${esc(wxc.mark_sent_endpoint || "")}</span>
+    </div>
     <h3 class="sub">Optional LingTai bridge</h3>
     <div class="preview">${esc(bridge.note || "")}</div>
     ${standaloneRows(bridgeCaps)}
