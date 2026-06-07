@@ -57,6 +57,7 @@
       "updated_at": "2026-06-05T08:00:00-07:00"
     }
   ],
+  "provider_invocations": [],
   "cost_policy": {
     "enabled": true,
     "currency": "USD",

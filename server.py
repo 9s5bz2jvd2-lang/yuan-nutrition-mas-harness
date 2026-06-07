@@ -844,6 +844,199 @@ def real_model_call(base_url, model, api_key, prompt, max_tokens=MODEL_CALL_MAX_
 
 
 # --------------------------------------------------------------------------
+# MAS runtime provider invocation: task -> agent -> provider -> model
+# --------------------------------------------------------------------------
+
+def _provider_base_origin(base_url):
+    try:
+        parsed = urlparse((base_url or "").strip())
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    return ""
+
+
+def _is_local_provider_endpoint(base_url):
+    try:
+        host = (urlparse((base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        host = ""
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _resolve_agent_provider_spec(state, agent, task, prompt, payload):
+    """Resolve an agent's provider/model into an in-memory call spec. No API key is written to state."""
+    payload = payload or {}
+    provider_id = (payload.get("provider_id") or agent.get("provider_id") or "").strip()
+    if not provider_id:
+        return None, None
+    catalog = {p["id"]: p for p in PROVIDER_CATALOG}
+    if provider_id not in catalog:
+        return None, f"Agent {agent.get('id')} 指定了未知 provider_id：{provider_id}"
+    require_call = bool(payload.get("require_provider_call") or payload.get("confirm_provider_call"))
+    entry = _provider_entry(state, provider_id) or {}
+    # Backward compatibility: existing lightweight cards may carry only a provider_id as a UI hint.
+    # Only invoke when a configured provider entry (or explicit base_url override) makes the runtime path real.
+    if not entry and not payload.get("base_url"):
+        if require_call:
+            return None, f"Agent {agent.get('id')} 的 provider {provider_id} 尚未保存配置，无法调用模型。"
+        return None, None
+    if entry and not entry.get("configured") and not payload.get("base_url"):
+        if require_call:
+            return None, f"Agent {agent.get('id')} 的 provider {provider_id} 尚未配置 key，无法调用模型。"
+        return None, None
+    base_url = (payload.get("base_url") or entry.get("base_url") or catalog[provider_id]["default_base_url"] or "").strip()
+    model = (payload.get("model") or agent.get("model") or entry.get("model") or catalog[provider_id]["default_model"] or "").strip()
+    if not base_url:
+        if require_call:
+            return None, f"Agent {agent.get('id')} 的 provider {provider_id} 缺少 base_url，无法调用模型。"
+        return None, None
+    if not model:
+        if require_call:
+            return None, f"Agent {agent.get('id')} 的 provider {provider_id} 缺少 model，无法调用模型。"
+        return None, None
+    api_key, key_source = resolve_provider_api_key(provider_id)
+    if not api_key:
+        if require_call:
+            env_name = _provider_env_key_name(provider_id)
+            return None, (f"Agent {agent.get('id')} 的 provider {provider_id} 未找到 key；"
+                          f"请保存 key，或设置只读 env slot {env_name}，或显式启用 .secrets fallback。")
+        return None, None
+
+    local_mock = _is_local_provider_endpoint(base_url)
+    if not local_mock and not payload.get("confirm_cost"):
+        if require_call:
+            return None, ("非本地 provider endpoint 可能产生真实费用；MAS runtime 调用真实外部模型时必须传 confirm_cost=true。"
+                          "本地 OpenAI-compatible mock server 可不传 confirm_cost。")
+        return None, None
+
+    max_tokens = payload.get("max_tokens") or MODEL_CALL_MAX_TOKENS
+    try:
+        max_tokens = max(1, min(int(max_tokens), MODEL_CALL_MAX_TOKENS))
+    except (TypeError, ValueError):
+        max_tokens = MODEL_CALL_MAX_TOKENS
+
+    if local_mock:
+        pre_estimate, pre_usage = 0.0, {"prompt_tokens_estimate": len(prompt or "") // 4 + 1, "completion_tokens_estimate": max_tokens}
+    else:
+        pre_estimate, pre_usage = estimate_model_cost_usd(state, provider_id, usage=None, prompt=prompt, max_tokens=max_tokens)
+        budget_err = budget_preflight(state, kind="mas_provider_call", provider_id=provider_id,
+                                      estimated_usd=pre_estimate, note=f"task={task.get('id')}; agent={agent.get('id')}; model={model}")
+        if budget_err:
+            return None, budget_err
+
+    return {
+        "provider_id": provider_id,
+        "base_url": base_url,
+        "base_url_origin": _provider_base_origin(base_url),
+        "model": model,
+        "api_key": api_key,
+        "key_source": key_source,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "local_mock": local_mock,
+        "preflight_estimated_cost_usd": pre_estimate,
+        "preflight_usage_estimate": pre_usage,
+    }, None
+
+
+def execute_agent_provider_call(state, agent, task, description, payload=None):
+    """Synchronously execute one agent task through its configured provider. Returns (result, error)."""
+    prompt = (
+        f"Agent name: {agent.get('name','')}\n"
+        f"Agent role: {agent.get('role','')}\n"
+        f"Task id: {task.get('id')}\n"
+        f"Task: {description or ''}\n\n"
+        "Return a concise, useful result for the coordinator."
+    )
+    spec, err = _resolve_agent_provider_spec(state, agent, task, prompt, payload or {})
+    if err or not spec:
+        return None, err
+
+    invocation = {
+        "id": new_id("invoke"),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "task_id": task.get("id"),
+        "agent_id": agent.get("id"),
+        "agent_name": agent.get("name"),
+        "provider_id": spec["provider_id"],
+        "model": spec["model"],
+        "base_url_origin": spec.get("base_url_origin"),
+        "key_source": spec.get("key_source"),
+        "local_mock": bool(spec.get("local_mock")),
+        "status": "calling",
+        "invocation_status": "calling",
+        "response_status": None,
+        "preflight_estimated_cost_usd": spec.get("preflight_estimated_cost_usd", 0.0),
+    }
+    state.setdefault("provider_invocations", []).insert(0, invocation)
+    state["provider_invocations"] = state["provider_invocations"][:120]
+    task["provider_invocation_id"] = invocation["id"]
+    task["provider_id"] = spec["provider_id"]
+    task["model"] = spec["model"]
+    task["status"] = "执行中"
+    task["provider_invocation_status"] = "calling"
+    log_event(state, f"MAS provider 调用开始：task={task.get('id')} agent={agent.get('id')} provider={spec['provider_id']} model={spec['model']} local_mock={bool(spec.get('local_mock'))}", kind="mas_provider")
+
+    result, call_err = real_model_call(spec["base_url"], spec["model"], spec["api_key"], spec["prompt"], max_tokens=spec["max_tokens"])
+    spec["api_key"] = None
+    invocation["updated_at"] = now_iso()
+    if call_err:
+        invocation.update({
+            "status": "failed",
+            "invocation_status": "failed",
+            "response_status": "error",
+            "error": redact(call_err[:500]),
+        })
+        task["status"] = "失败"
+        task["result"] = redact(call_err[:1000])
+        task["provider_invocation_status"] = "failed"
+        task["response_status"] = "error"
+        agent["status"] = "待命"
+        log_event(state, f"MAS provider 调用失败：task={task.get('id')} agent={agent.get('id')} provider={spec['provider_id']} model={spec['model']} error={call_err[:80]}", kind="mas_provider")
+        return None, call_err
+
+    result = result or {}
+    result.pop("api_key", None)
+    actual_estimate, actual_usage = (0.0, spec.get("preflight_usage_estimate"))
+    if not spec.get("local_mock"):
+        actual_estimate, actual_usage = estimate_model_cost_usd(state, spec["provider_id"], usage=result.get("usage"),
+                                                               prompt=spec.get("prompt") or "", max_tokens=spec["max_tokens"])
+        record_cost_event(state, kind="mas_provider_call", provider_id=spec["provider_id"], estimated_usd=actual_estimate,
+                          usage=result.get("usage") or actual_usage, source="provider_usage" if result.get("usage") else "local_estimate",
+                          note=f"task={task.get('id')}; agent={agent.get('id')}; model={result.get('model') or spec['model']}; latency={result.get('latency_ms')}ms")
+    invocation.update({
+        "status": "completed",
+        "invocation_status": "completed",
+        "response_status": result.get("http_status"),
+        "latency_ms": result.get("latency_ms"),
+        "usage": result.get("usage"),
+        "estimated_cost_usd": actual_estimate,
+        "reply_preview": redact((result.get("reply") or "")[:300]),
+    })
+    task["status"] = "完成"
+    task["result"] = result.get("reply") or ""
+    task["provider_result"] = {
+        "provider_id": spec["provider_id"],
+        "model": result.get("model") or spec["model"],
+        "invocation_id": invocation["id"],
+        "invocation_status": "completed",
+        "response_status": result.get("http_status"),
+        "latency_ms": result.get("latency_ms"),
+        "usage": result.get("usage"),
+        "local_mock": bool(spec.get("local_mock")),
+        "reply": result.get("reply") or "",
+    }
+    task["provider_invocation_status"] = "completed"
+    task["response_status"] = result.get("http_status")
+    agent["status"] = "待命"
+    log_event(state, f"MAS provider 调用成功：task={task.get('id')} agent={agent.get('id')} provider={spec['provider_id']} model={result.get('model') or spec['model']} status={result.get('http_status')}", kind="mas_provider")
+    return task["provider_result"], None
+
+
+# --------------------------------------------------------------------------
 # 累计预算 / 成本面板（v0.23）
 # --------------------------------------------------------------------------
 
@@ -1165,6 +1358,7 @@ def default_state():
         "approvals": [],
         "approval_grants": [], # v0.23 scoped grants: allow-once / allow-for-task with expiry + audit
         "providers": [],       # 已配置的供应商（脱敏）
+        "provider_invocations": [], # MAS runtime provider invocation ledger: task -> agent -> provider -> model -> response
         "cost_policy": {       # v0.23 累计预算/成本策略；估算值，不连接供应商账单
             "enabled": True,
             "currency": "USD",
@@ -1270,6 +1464,7 @@ def normalize_state(state):
     state.setdefault("approvals", [])
     state.setdefault("approval_grants", [])
     state.setdefault("providers", [])
+    state.setdefault("provider_invocations", [])
     state.setdefault("cost_policy", base["cost_policy"])
     for k, v in base["cost_policy"].items():
         state["cost_policy"].setdefault(k, v)
@@ -1392,7 +1587,7 @@ def assign_task(state, payload):
     agent["context_pressure"] = estimate_context_pressure(agent)
     log_event(state, f"派任务给 {agent['name']}：{desc[:40]}")
 
-    # 本地编排执行：低风险记录为完成，敏感任务进确认队列
+    # 执行路径：敏感任务仍进确认队列；低风险任务若 agent 配有 provider，则真正调用模型。
     if risk == "sensitive":
         ap = add_approval(state, {
             "action": payload.get("action_type") or "wechat_send",
@@ -1405,10 +1600,20 @@ def assign_task(state, payload):
         agent["status"] = "等确认"
         task["approval_id"] = ap["id"]
     else:
-        task["status"] = "完成"
-        task["result"] = f"已完成本地编排记录：{desc[:60]}"
-        agent["status"] = "待命"
-        log_event(state, f"{agent['name']} 完成本地编排记录")
+        provider_result, provider_err = execute_agent_provider_call(state, agent, task, desc, payload)
+        if provider_err:
+            task["status"] = "失败"
+            task["result"] = redact(provider_err[:1000])
+            agent["status"] = "待命"
+        elif provider_result:
+            task["status"] = "完成"
+            task["result"] = provider_result.get("reply") or ""
+            agent["status"] = "待命"
+        else:
+            task["status"] = "完成"
+            task["result"] = f"已完成本地编排记录：{desc[:60]}"
+            agent["status"] = "待命"
+            log_event(state, f"{agent['name']} 完成本地编排记录（未配置 provider，未调用模型）")
     return task, None
 
 
@@ -2933,19 +3138,42 @@ def orchestrate_multi_agent(state, payload):
     for i, agent in enumerate(selected):
         desc = f"多 agent 编排｜目标：{objective}\n子任务：{step_templates[i % len(step_templates)]}"
         risk = "sensitive" if any(k in objective for k in ("push", "PR", "merge", "提交", "合并", "删除", "回滚", "rollback")) else "low"
-        task, err = assign_task(state, {"agent_id": agent["id"], "description": desc, "source": source, "risk": risk, "action_type": "multi_agent_sensitive" if risk == "sensitive" else "multi_agent_task"})
+        task_payload = {"agent_id": agent["id"], "description": desc, "source": source, "risk": risk,
+                        "action_type": "multi_agent_sensitive" if risk == "sensitive" else "multi_agent_task"}
+        for k in ("confirm_cost", "harness_run_id", "base_url", "max_tokens"):
+            if k in payload:
+                task_payload[k] = payload.get(k)
+        task, err = assign_task(state, task_payload)
         if task:
             tasks.append(task)
+    agent_results = [{
+        "agent_id": t.get("agent_id"),
+        "agent_name": t.get("agent_name"),
+        "task_id": t.get("id"),
+        "provider_id": t.get("provider_id"),
+        "model": t.get("model"),
+        "provider_invocation_id": t.get("provider_invocation_id"),
+        "invocation_status": t.get("provider_invocation_status"),
+        "response_status": t.get("response_status"),
+        "status": t.get("status"),
+        "result": _bounded(t.get("result") or "", 500),
+    } for t in tasks]
+    completed = [t for t in tasks if t.get("status") == "完成"]
+    failed = [t for t in tasks if t.get("status") in ("失败", "卡住")]
+    final_result = "\n".join([f"{r.get('agent_name')}: {r.get('result')}" for r in agent_results if r.get("result")])
     batch = {
         "id": new_id("orch"),
         "created_at": now_iso(),
         "objective": redact(objective),
         "source": source,
+        "harness_run_id": payload.get("harness_run_id"),
         "agent_ids": [a["id"] for a in selected],
         "agent_names": [a["name"] for a in selected],
         "task_ids": [t["id"] for t in tasks],
-        "status": "等确认" if any(t.get("status") == "等确认" for t in tasks) else "已编排",
+        "status": "等确认" if any(t.get("status") == "等确认" for t in tasks) else ("失败" if failed else ("completed" if tasks and len(completed) == len(tasks) else "已编排")),
         "summary": f"已把目标拆给 {len(selected)} 个子灵：" + "、".join(a["name"] for a in selected),
+        "agent_results": agent_results,
+        "final_result": final_result,
     }
     state.setdefault("orchestrations", []).insert(0, batch)
     state["orchestrations"] = state["orchestrations"][:50]
@@ -3548,7 +3776,8 @@ def _classify_route(text, payload=None):
         return "collect_lingtai"
     if payload.get("address") or payload.get("confirm_dispatch") or _parse_dispatch_command(text)[0]:
         return "lingtai_mailbox"
-    if any(k in lower for k in ("claude", "codex", "改代码", "代码", "commit", "pr", "merge")):
+    # Keep code-worker routing explicit; do not treat the substring "pr" inside words like "provider" as a PR request.
+    if any(k in lower for k in ("claude", "codex", "改代码", "代码", "commit", "merge")) or re.search(r"(^|\s|/)pr(\s|$|#)", lower):
         return "code_worker"
     if any(k in lower for k in ("daemon", "分神", "临时分析", "扫一遍")):
         return "daemon_plan"
@@ -3598,7 +3827,7 @@ def _harness_update_from_route(state, route):
         return None
     run["route_id"] = route.get("id")
     run["route_type"] = route.get("route_type") or run.get("route_type")
-    for key in ("task_id", "agent_id", "approval_id", "dispatch_id", "mailbox_id", "worker_request_id", "worker_kind", "collected", "shougong_path", "insight_id", "soul_flow_id", "orchestration_id"):
+    for key in ("task_id", "agent_id", "approval_id", "dispatch_id", "mailbox_id", "worker_request_id", "worker_kind", "provider_invocation_id", "collected", "shougong_path", "insight_id", "soul_flow_id", "orchestration_id"):
         if route.get(key):
             run[key] = route.get(key)
     status = route.get("status") or "unknown"
@@ -4000,11 +4229,14 @@ def route_task(state, payload):
 
     if route_type == "multi_agent":
         objective = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else text
-        batch, err = orchestrate_multi_agent(state, {"objective": objective, "source": source})
+        batch, err = orchestrate_multi_agent(state, {"objective": objective, "source": source, "agent_ids": payload.get("agent_ids") or [],
+                                             "harness_run_id": route.get("harness_run_id"), "confirm_cost": payload.get("confirm_cost"),
+                                             "base_url": payload.get("base_url"), "max_tokens": payload.get("max_tokens")})
         if err:
             return None, err
-        route.update({"status": "completed", "orchestration_id": batch["id"], "task_ids": batch.get("task_ids", []),
-                      "reply_text": f"{batch['summary']}\n批次：{batch['id']}\n任务：{', '.join(batch.get('task_ids', [])[:5])}"})
+        route.update({"status": "completed" if batch.get("status") == "completed" else batch.get("status", "completed"),
+                      "orchestration_id": batch["id"], "task_ids": batch.get("task_ids", []),
+                      "reply_text": f"{batch['summary']}\n批次：{batch['id']}\n任务：{', '.join(batch.get('task_ids', [])[:5])}\nFinal Result:\n{batch.get('final_result','')}"})
         route["steps"].append("multi_agent_orchestrated")
         return _record_router_run(state, route), None
 
@@ -4077,19 +4309,31 @@ def route_task(state, payload):
 
     # Default: ordinary local task.
     agent = _first_available_agent(state)
-    sensitive = any(k in text for k in ("发", "提交", "commit", "merge", "PR", "pr", "回滚", "rollback", "删除", "push"))
+    sensitive = any(k in text for k in ("发", "提交", "commit", "merge", "PR", "回滚", "rollback", "删除", "push")) or re.search(r"(^|\s|/)pr(\s|$|#)", text, re.IGNORECASE)
     task, err = assign_task(state, {
         "agent_id": agent["id"],
         "description": text,
         "source": source,
         "risk": "sensitive" if sensitive else "low",
         "action_type": "sensitive_task" if sensitive else "local_task",
+        "harness_run_id": route.get("harness_run_id"),
+        "confirm_cost": payload.get("confirm_cost"),
+        "base_url": payload.get("base_url"),
+        "max_tokens": payload.get("max_tokens"),
     })
     if err:
         return None, err
-    route.update({"status": task.get("status", "completed"), "task_id": task["id"], "agent_id": agent["id"],
-                  "reply_text": (f"收到，已进入确认队列：{task.get('approval_id')}。" if task.get("approval_id") else f"收到，已记录到 {agent['name']} 的任务队列：{task['id']}。")})
-    route["steps"].append("local_task_recorded")
+    route_status = "completed" if task.get("status") == "完成" else task.get("status", "completed")
+    route["provider_invocation_id"] = task.get("provider_invocation_id")
+    if task.get("provider_result"):
+        reply_text = (f"收到，{agent['name']} 已完成 provider 调用。\n"
+                      f"task_id={task['id']} agent_id={agent['id']} provider_id={task.get('provider_id')} "
+                      f"model={task.get('model')} invocation_status={task.get('provider_invocation_status')} "
+                      f"response_status={task.get('response_status')}\n结果：{task.get('result','')}")
+    else:
+        reply_text = (f"收到，已进入确认队列：{task.get('approval_id')}。" if task.get("approval_id") else f"收到，已记录到 {agent['name']} 的任务队列：{task['id']}。")
+    route.update({"status": route_status, "task_id": task["id"], "agent_id": agent["id"], "reply_text": reply_text})
+    route["steps"].append("provider_task_executed" if task.get("provider_result") else "local_task_recorded")
     return _record_router_run(state, route), None
 
 
@@ -6490,6 +6734,7 @@ class Handler(BaseHTTPRequestHandler):
             "approvals": state["approvals"][:30],
             "approval_grants": approval_grant_status(state),
             "providers": safe_providers,
+            "provider_invocations": state.get("provider_invocations", [])[:60],
             "cost_policy": public_cost_policy(state),
             "cost_status": cost_status(state),
             "cost_ledger": state.get("cost_ledger", [])[:40],
