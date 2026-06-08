@@ -1,5 +1,9 @@
 # Yuan Nutrition MAS Harness v0.24
 
+> **Temporary public demonstration notice**<br>
+> 目前为研发中临时开放展示，未经许可不得复制、商用、再分发或作为衍生系统发布。<br>
+> This repository is temporarily public for demonstration while under development. Without prior permission, copying, commercial use, redistribution, or release as a derivative system is not allowed.
+
 **Yuan Nutrition MAS Harness** is a nutritionist-friendly Multi-Agent System (MAS) harness developed by Wang Runyuan, inspired by [LingTai](https://github.com/Lingtai-AI/lingtai) and able to bridge to it when configured. The lightweight harness core is standalone: after clone/download it runs with Python stdlib plus the included vanilla HTML/CSS/JS UI. You do **not** need to install full LingTai to start the local app, task queue, approval gates, harness run state, budget guardrails, docs, or self-check.
 
 This is not a shell or a button-only GUI. It is a runnable **lightweight harness**: WeChat/GUI input enters a local `harness_run`, then follows the auditable protocol `intake → route → approval → dispatch → collect → return`. v0.24 builds on optional LingTai bridge entry points, a standalone HTTP connector for WeChat/external-channel inbound, read-only memory/skill indexes when a LingTai agent directory is configured, Secret Vault restricted fallback, unified Task Router, budget/cost panel, controlled worker dispatch, scoped approval grants, the **GUI Worker Launcher**, a read-only Harness Watchdog, and local-only manual harness resolution. Full LingTai capabilities are optional enhancements: daemon requests can be written to a configured LingTai controller mailbox, replies can be collected from a configured inbox, and avatar/daemon bridge features require a real LingTai network. Codex/Claude are also optional local CLI workers. The watchdog adds `needs_attention`, `stale_dispatched`, `last_activity_age_seconds`, and recommended actions to `/api/harness/status` so stuck/long-uncollected runs are visible without changing external state; `/api/harness/resolve` lets an operator close or mark those runs locally without sending, approving, or dispatching anything; `/api/harness/recover` adds a bounded recovery path: `collect` only scans the reply inbox, while `request_retry` creates a fresh approval gate and never auto-resends. If a controller reply declares `external_side_effects`, the WeChat return is held behind a `harness_side_effect_return` confirmation gate before it can enter `wechat_outbox`.
@@ -27,10 +31,10 @@ The GUI can create optional worker-launch requests for four worker bodies, all b
 
 Honest boundary: the app core is local-first, standalone, and approval-gated. Codex/Claude may incur model cost when used; avatar creates local `.lingtai` agent files when the optional bridge is configured; daemon is not executed directly by the web process but by the real LingTai controller workflow.
 
-## Open source status
+## Public demonstration status
 
-- **Repository**: public source repository at <https://github.com/9s5bz2jvd2-lang/yuan-nutrition-mas-harness>
-- **License**: [MIT](LICENSE), Copyright (c) 2026 Wang Runyuan
+- **Repository**: temporarily public source repository at <https://github.com/9s5bz2jvd2-lang/yuan-nutrition-mas-harness>
+- **License**: [Temporary Public Demonstration License](LICENSE), Copyright (c) 2026 Wang Runyuan. All rights reserved.
 - **Security and safety policy**: see [SECURITY.md](SECURITY.md)
 - **Roadmap**: see [ROADMAP.md](ROADMAP.md)
 

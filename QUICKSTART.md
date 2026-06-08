@@ -142,7 +142,7 @@ Optional local tools, credentials, or bridge configuration:
 
 ## 8. License and roadmap
 
-Yuan Nutrition MAS Harness is released under the [MIT License](LICENSE).
+Yuan Nutrition MAS Harness is available under a conservative [Temporary Public Demonstration License](LICENSE). 目前为研发中临时开放展示，未经许可不得复制、商用、再分发或作为衍生系统发布。
 
 For public-source safety notes, read [SECURITY.md](SECURITY.md). For next development steps, read [ROADMAP.md](ROADMAP.md).
 

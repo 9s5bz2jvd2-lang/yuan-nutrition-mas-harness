@@ -1,21 +1,21 @@
-MIT License
+Yuan Nutrition MAS Harness Temporary Public Demonstration License
+Copyright (c) 2026 Wang Runyuan. All rights reserved.
 
-Copyright (c) 2026 Wang Runyuan
+目前为研发中临时开放展示，未经许可不得复制、商用、再分发或作为衍生系统发布。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This repository is made publicly visible for temporary demonstration while under development.
+Unless Wang Runyuan gives prior written permission, you may not copy, use, modify,
+merge, publish, distribute, sublicense, sell, commercialize, re-distribute, or
+release this work or any derivative system based on this work.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permitted actions are limited to viewing the repository contents through GitHub
+or through a copy obtained from GitHub solely for personal evaluation of this
+project. This permission does not grant any right to reuse the code, documents,
+architecture, workflows, prompts, interfaces, or other project materials in any
+product, service, research artifact, commercial offering, or derivative system.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The software and materials are provided "as is", without warranty of any kind,
+express or implied, including but not limited to warranties of merchantability,
+fitness for a particular purpose, and non-infringement. In no event shall Wang
+Runyuan be liable for any claim, damages, or other liability arising from or in
+connection with the software, materials, or their use.
