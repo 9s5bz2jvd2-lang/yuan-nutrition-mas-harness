@@ -208,3 +208,11 @@ python3 scripts/self_check.py
 
 ### v0.17：Secret Vault health scan + restricted fallback
 `/api/health` 与 `/api/secret/scan` 会只读扫描本地状态/示例/.env/.secrets JSON 的明文 key 风险，只显示位置与字段，不回显值；发现风险时提示迁移到 Mac Keychain 或受限 env/.secrets。
+
+---
+
+> **禁止抄袭商用，违者等同盗法，因果自负**
+> **Plagiarism and commercial use prohibited. Violators shall be deemed as infringers of law and shall bear all consequences.**
+>
+> 公益开源项目，禁止商用 | Public welfare open-source project, commercial use prohibited
+> License: CC BY-NC 4.0
