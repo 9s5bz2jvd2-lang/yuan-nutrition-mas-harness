@@ -14,6 +14,7 @@ In this prototype, WeChat/GUI input can enter a local `harness_run`; the operato
 
 - A lightweight local GUI built with a Python standard-library HTTP server and vanilla HTML/CSS/JavaScript.
 - A nutritionist-facing task console for intake, routing, approval, dispatch, collection, and return.
+- Support for up to 5 local agent / child-agent cards for multi-agent orchestration (`MAX_AGENTS=5`), while optional worker launch modes remain separately approval-gated.
 - Optional bridges to LingTai-style agents, mailbox dispatch/collection, avatars, daemons, Codex/Claude-style workers, and external message connectors.
 - Standalone local status pages and health checks that can run after clone/download without full LingTai.
 - Provider/model configuration paths for OpenAI-compatible model calls when the user supplies their own local configuration and credentials.
