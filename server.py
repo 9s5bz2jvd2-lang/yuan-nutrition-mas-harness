@@ -148,8 +148,8 @@ DEMO_TIMESTAMP = "2026-06-05T08:00:00-07:00"
 COMMIT_AUTHOR_NAME = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_NAME", "Wang Runyuan")
 COMMIT_AUTHOR_EMAIL = os.environ.get("LINGTAI_SIMPLE_COMMIT_AUTHOR_EMAIL", "281843989+9s5bz2jvd2-lang@users.noreply.github.com")
 GITHUB_EXPECTED_LOGIN = os.environ.get("LINGTAI_SIMPLE_GITHUB_EXPECTED_LOGIN", "9s5bz2jvd2-lang")
-_DEFAULT_GH_CONFIG_DIR = "/Users/huangzesen/work/GitHub/lingtai/.worktrees/docs-beginner-work-manual/.gh-runyuan"
-GITHUB_CONFIG_DIR = os.environ.get("LINGTAI_SIMPLE_GH_CONFIG_DIR") or (_DEFAULT_GH_CONFIG_DIR if os.path.isdir(_DEFAULT_GH_CONFIG_DIR) else "")
+_DEFAULT_GH_CONFIG_DIR = ""
+GITHUB_CONFIG_DIR = os.environ.get("LINGTAI_SIMPLE_GH_CONFIG_DIR") or _DEFAULT_GH_CONFIG_DIR
 GITHUB_PR_BODY_MAX_CHARS = 6000
 
 

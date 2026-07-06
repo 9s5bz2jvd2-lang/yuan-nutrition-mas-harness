@@ -1,5 +1,8 @@
 # Yuan Nutrition MAS Harness v0.24
 
+> Professor-facing introduction: [INTRODUCTION.md](INTRODUCTION.md)
+
+
 > **Temporary public demonstration notice**<br>
 > 目前为研发中临时开放展示，未经许可不得复制、商用、再分发或作为衍生系统发布。<br>
 > This repository is temporarily public for demonstration while under development. Without prior permission, copying, commercial use, redistribution, or release as a derivative system is not allowed.
@@ -211,8 +214,4 @@ python3 scripts/self_check.py
 
 ---
 
-> **禁止抄袭商用，违者等同盗法，因果自负**
-> **Plagiarism and commercial use are strictly prohibited. Violators shall be deemed as thieves of sacred scriptures and shall face divine karmic retribution themselves.**
->
-> 公益开源项目，禁止商用 | Public welfare open-source project, commercial use prohibited
-> License: CC BY-NC 4.0
+> 公益开源项目 | Public welfare open-source project
